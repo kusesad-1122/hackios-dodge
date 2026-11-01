@@ -70,10 +70,7 @@ jobs:
           echo "found: $AP"
           # the build looks for it inside each SDK's usr/local/libexec
           for SDK in $(xcodebuild -showsdks -json 2>/dev/null \
-                       | python3 -c 'import json,sys
-d=json.load(sys.stdin)
-for s in d:
-    print(s.get("sdkPath",""))' 2>/dev/null | sort -u) \
+                       | python3 -c 'import json,sys; print("\n".join(s.get("sdkPath", "") for s in json.load(sys.stdin)))' 2>/dev/null | sort -u) \
                      $(xcrun --sdk macosx --show-sdk-path) \
                      $(xcrun --sdk iphoneos --show-sdk-path); do
             [ -d "$SDK" ] || continue
