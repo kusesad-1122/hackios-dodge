@@ -1,15 +1,13 @@
 name: build-kernel
 
-# Build the iOS 26 (xnu-12377.121.6) kernel with the dodge SoC layer.
+# Build the iOS 26 (xnu-12377.121.6, arm64e) kernel with the dodge SoC layer.
 #
-# Why on macOS and not on Linux: Apple's XNU build expects Xcode's cctools, mig
-# and iig, and clang's Apple pointer-authentication builtins. A Linux clang knows
-# the __builtin_ptrauth_* names but has no implementation for them, so the arm64e
-# (HAS_APPLE_PAC) paths cannot compile there at all. base/xnu/README.md says the
-# same: on macOS the toolchain comes from Xcode and theos is not needed.
-#
-# The result is the kernel the loader boots: mach.development.bcm2837.
-
+# Why macOS: Apple's XNU build wants Xcode's cctools, mig and iig, and clang's
+# Apple pointer-authentication builtins. A Linux clang knows the
+# __builtin_ptrauth_* names but has no implementation for them -- measured on
+# Ubuntu clang 18/19/20, every target and -march combination fails with "this
+# target does not support pointer authentication". base/xnu/README.md says the
+# same in its own words: on macOS the toolchain comes from Xcode.
 on:
   push:
     branches: [main]
@@ -18,60 +16,48 @@ on:
 
 jobs:
   kernel:
-    # Apple silicon: the build produces arm64e and needs an arm64 host toolchain.
+    # Apple silicon, so the arm64e toolchain is native.
     runs-on: macos-14
     timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: toolchain
+      - name: what this runner has
         run: |
-          echo "=== what this runner has ==="
           sw_vers
           uname -m
           xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version || true
           echo
-          echo "=== the tools the build will use ==="
-          for t in clang ld mig iig unifdef csh; do
+          for t in clang ld mig iig unifdef csh plutil; do
             printf '%-10s ' "$t"
             xcrun -f "$t" 2>/dev/null || command -v "$t" || echo MISSING
           done
 
-      - name: fetch the kernel tree
+      - name: the kernel tree
         run: |
-          set -e
-          # Apple's xnu-12377.121.6, then dada's rebase patch, then dodge's layer
+          set -eux
           git clone --depth 1 --branch xnu-12377.121.6 \
             https://github.com/apple-oss-distributions/xnu.git xnu-src
           cd xnu-src
-          git apply --whitespace=nowarn ../kernel/xnu-12377.121.6-dada.patch
-          git apply --whitespace=nowarn ../kernel/xnu-12377.121.6-dodge.patch
-          echo "patched: $(git status --short | wc -l) files touched"
-
-      - name: the two libraries the kernel links
-        run: |
-          set -e
-          cd xnu-src/xnu-deps
-          # On Darwin this takes mig/unifdef/csh and the SDK from Xcode instead of
-          # fetching and building them (xnu-env.sh sets XNU_HOST_DARWIN).
-          bash setup.sh --stage2 || {
-            echo "::warning::stage2 did not finish; the kernel may still link"
-          }
+          # The patch is at this repository's kernel/ directory and the workflow
+          # runs from the checkout root, so the path is ../kernel/.
+          git apply --whitespace=nowarn ../kernel/xnu-12377.121.6-dodge.patch \
+            || { echo "::error::the dodge patch did not apply"; exit 1; }
+          echo "patched files:"
+          git status --short | head -20
 
       - name: build
         run: |
-          set -e
           cd xnu-src
           export XNU_SRC="$PWD"
           export XNU_ARCH=arm64e
           export MACHINE=BCM2837
           export RC_DARWIN_KERNEL_VERSION=12377.121.6
-          # -k is required: the remaining complaints all come after the link
-          bash xnu-build.sh -j"$(sysctl -n hw.ncpu)" -k 2>&1 | tail -60
+          # -k is required: the remaining complaints all come after the link,
+          # in the export check and three symbolsets. Both dada's docs and
+          # base/xnu/README.md say the same. Judge by the file, not by make.
+          bash xnu-build.sh -j"$(sysctl -n hw.ncpu)" -k 2>&1 | tail -80
 
       - name: the kernel must exist
         id: check
@@ -83,14 +69,25 @@ jobs:
           fi
           ls -l "$K"
           file "$K"
+          echo
+          echo "=== arm64e? the cpusubtype must carry the ptrauth bit ==="
+          python3 - "$K" <<'PY'
+          import struct, sys
+          d = open(sys.argv[1], 'rb').read(12)
+          magic, cputype, cpusub = struct.unpack('<Iii', d)
+          print('  cpusubtype %#010x  ptrauth %s' % (
+              cpusub & 0xffffffff,
+              'SET (arm64e)' if cpusub & 0x80000000 else 'CLEAR (arm64, wrong!)'))
+          PY
+          echo
           echo "=== the SoC layer must be in it ==="
           for s in _hakios_soc_device _hakios_soc_facts _hakios_soc_is_sm8750; do
-            printf '%-26s ' "$s"
-            nm -n "$K" 2>/dev/null | grep -q " $s\$" && echo "present" || echo "ABSENT"
+            printf '  %-26s ' "$s"
+            nm -n "$K" 2>/dev/null | grep -q " $s\$" && echo present || echo ABSENT
           done
           echo "=== the phone's names ==="
           for n in dodge dada sm8750; do
-            printf '%-10s ' "$n"
+            printf '  %-10s ' "$n"
             strings "$K" | grep -qx "$n" && echo present || echo absent
           done
 
