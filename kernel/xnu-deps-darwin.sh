@@ -11,6 +11,7 @@ NATIVE_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
 SDK=${XNU_SDK_PATH:-$WORK/iPhoneOS.xnu.sdk}
 CLANG=$(xcrun -f clang)
+CLANG_RESOURCES=$("$CLANG" -print-resource-dir)
 LIBTOOL=$(xcrun -f libtool)
 [ -f "$TREE/makedefs/MakeInc.def" ] || { echo "no XNU tree at $TREE"; exit 1; }
 
@@ -63,7 +64,8 @@ COMMON=(-target "$ARCH-apple-ios$SDK_VERSION" -isysroot "$SDK" -c -Os -mkernel
 for area in osfmk bsd libkern pexpert iokit security; do
     COMMON+=("-I$HEADERS/$area")
 done
-COMMON+=("-I$TREE/EXTERNAL_HEADERS" "-idirafter" "$SDK/usr/include")
+COMMON+=("-I$TREE/EXTERNAL_HEADERS" "-isystem" "$CLANG_RESOURCES/include"
+    "-idirafter" "$SDK/usr/include")
 
 "$CLANG" "${COMMON[@]}" \
     -DDISPATCH_USE_DTRACE=0 -DOS_ATOMIC_CONFIG_MEMORY_ORDER_DEPENDENCY=1 \
