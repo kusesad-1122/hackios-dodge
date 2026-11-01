@@ -40,8 +40,11 @@ jobs:
           git clone --depth 1 --branch xnu-12377.121.6 \
             https://github.com/apple-oss-distributions/xnu.git xnu-src
           cd xnu-src
-          # The patch is at this repository's kernel/ directory and the workflow
-          # runs from the checkout root, so the path is ../kernel/.
+          # Two patches, in this order: dada's rebase (the iOS 26 arm64e backend),
+          # then this repository's increment on top of it. Both live in kernel/
+          # and the workflow runs from the checkout root: ../kernel/.
+          git apply --whitespace=nowarn ../kernel/xnu-12377.121.6-dada.patch \
+            || { echo "::error::dada's patch did not apply"; exit 1; }
           git apply --whitespace=nowarn ../kernel/xnu-12377.121.6-dodge.patch \
             || { echo "::error::the dodge patch did not apply"; exit 1; }
           echo "patched files:"
