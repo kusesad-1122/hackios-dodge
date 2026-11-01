@@ -6,8 +6,7 @@ name: build-kernel
 # Apple pointer-authentication builtins. A Linux clang knows the
 # __builtin_ptrauth_* names but has no implementation for them -- measured on
 # Ubuntu clang 18/19/20, every target and -march combination fails with "this
-# target does not support pointer authentication". base/xnu/README.md says the
-# same in its own words: on macOS the toolchain comes from Xcode.
+# target does not support pointer authentication".
 on:
   push:
     branches: [main]
@@ -16,7 +15,6 @@ on:
 
 jobs:
   kernel:
-    # Apple silicon, so the arm64e toolchain is native.
     runs-on: macos-14
     timeout-minutes: 120
 
@@ -28,6 +26,7 @@ jobs:
           sw_vers
           uname -m
           xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
           echo
           for t in clang ld mig iig unifdef csh plutil; do
             printf '%-10s ' "$t"
@@ -41,33 +40,28 @@ jobs:
             https://github.com/apple-oss-distributions/xnu.git xnu-src
           cd xnu-src
           # Two patches, in this order: dada's rebase (the iOS 26 arm64e backend),
-          # then this repository's increment on top of it. Both live in kernel/
-          # and the workflow runs from the checkout root: ../kernel/.
-          git apply --whitespace=nowarn ../kernel/xnu-12377.121.6-dada.patch \
-            || { echo "::error::dada's patch did not apply"; exit 1; }
-          git apply --whitespace=nowarn ../kernel/xnu-12377.121.6-dodge.patch \
-            || { echo "::error::the dodge patch did not apply"; exit 1; }
+          # then this repository's increment on top of it.
+          git apply --whitespace=nowarn ../kernel/xnu-12377.121.6-dada.patch
+          git apply --whitespace=nowarn ../kernel/xnu-12377.121.6-dodge.patch
           echo "patched files:"
           git status --short | head -20
 
       - name: build
+        working-directory: xnu-src
+        env:
+          XNU_SRC: ${{ github.workspace }}/xnu-src
+          XNU_ARCH: arm64e
+          MACHINE: BCM2837
+          RC_DARWIN_KERNEL_VERSION: 12377.121.6
         run: |
-          cd xnu-src
-          export XNU_SRC="$PWD"
-          export XNU_ARCH=arm64e
-          export MACHINE=BCM2837
-          export RC_DARWIN_KERNEL_VERSION=12377.121.6
-          # -k is required: the remaining complaints all come after the link,
-          # in the export check and three symbolsets. Both dada's docs and
-          # base/xnu/README.md say the same. Judge by the file, not by make.
-          bash xnu-build.sh -j"$(sysctl -n hw.ncpu)" -k 2>&1 | tail -80
+          bash ../kernel/xnu-build-darwin.sh -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -100
 
       - name: the kernel must exist
-        id: check
         run: |
           K=xnu-src/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
           if [ ! -s "$K" ]; then
             echo "::error::the kernel was not built"
+            find xnu-src/BUILD/obj -name 'mach.*' 2>/dev/null | head -10
             exit 1
           fi
           ls -l "$K"
