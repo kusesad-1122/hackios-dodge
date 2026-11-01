@@ -15,7 +15,7 @@ new file mode 100644
 index 0000000..70cbcd2
 --- /dev/null
 +++ b/bsd/dev/hakios_soc.c
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,230 @@
 +/*
 + * hakios_soc.c -- which phone is this?
 + *
@@ -56,6 +56,7 @@ index 0000000..70cbcd2
 +
 +#include <mach/machine/vm_types.h>
 +#include <mach/machine.h>
++#include <kern/startup.h>        /* __startup_func */
 +#include <libkern/libkern.h>
 +#include <pexpert/pexpert.h>
 +#include <pexpert/device_tree.h>
@@ -332,7 +333,7 @@ index 39ccd67..d96ec67 100644
 +#include "hakios_soc.h"        /* which phone is this: its addresses, from its device tree */
  #include <sys/redwood_audio.h>
  #include <sys/redwood_input.h>
- 
+
 @@ -4742,17 +4744,38 @@ redwood_adsp_init(void)
  	if (last_step == 0 && (!PE_parse_boot_argn("adsp", &on, sizeof(on)) || on != 1)) {
  		return;
@@ -373,7 +374,71 @@ index 39ccd67..d96ec67 100644
 +	glink.channel[CHANNEL_APR].name = "adsp_apps";     /* GPR, AudioReach's */
 +	printf("adsp: the SM8750's audio DSP: its addresses from the device tree (%s)\n",
 +		hakios_soc_device() ? hakios_soc_device() : "dada");
-+	}} else if (pe_arm_get_soc_base_phys() != REDWOOD_SOC_BASE) {
++	} else if (pe_arm_get_soc_base_phys() != REDWOOD_SOC_BASE) {
  		printf("adsp: adsp=1 and adsp_step=N are for the phone's audio DSP, and this is not the phone\n");
  		return;
  	}
+diff --git a/bsd/dev/redwood_goodix.c b/bsd/dev/redwood_goodix.c
+--- a/bsd/dev/redwood_goodix.c
++++ b/bsd/dev/redwood_goodix.c
+@@ -1027,7 +1027,10 @@
+ #define FTS_ROMBOOT_CMD_START_APP       0x08
+ #define FTS_FLASH_PACKET_LENGTH         32		/* bytes per PRAM write */
+
+-#include "redwood_focaltech_fw.h"
++/* Only the optional redwood FocalTech path needs this vendor firmware. */
++#if __has_include("redwood_focaltech_fw.h")
++#include "redwood_focaltech_fw.h"
++#endif
+
+ /*
+  * Vendor fts_read_bootid(): send { 0x55, 0xAA } as a 2-byte framed write (treated as a write of
+@@ -1145,8 +1148,14 @@
+ 		return true;
+ 	}
+
+-	if (!focaltech_enter_boot_rom()) {
+-		if (verbose) {
++#ifndef FOCALTECH_FW_LENGTH
++	if (verbose) {
++		printf("focaltech: firmware is not embedded; cold initialization unavailable\n");
++	}
++	return false;
++#else
++	if (!focaltech_enter_boot_rom()) {
++		if (verbose) {
+ 			printf("focaltech: chip not in boot ROM; last read runtime %02x %02x\n", high, low);
+ 		}
+ 		return false;
+@@ -1168,10 +1177,11 @@
+ 		return true;
+ 	}
+ 	if (verbose) {
+-		printf("focaltech: firmware did not come up (last runtime read %02x %02x)\n", high, low);
+-	}
+-	return false;
+-}
++		printf("focaltech: firmware did not come up (last runtime read %02x %02x)\n", high, low);
++	}
++	return false;
++#endif /* FOCALTECH_FW_LENGTH */
++}
+
+ /* ---- FocalTech touch reports --------------------------------------------------------------------- */
+
+diff --git a/libkern/libkern/c++/OSData.h b/libkern/libkern/c++/OSData.h
+--- a/libkern/libkern/c++/OSData.h
++++ b/libkern/libkern/c++/OSData.h
+@@ -967,8 +967,10 @@
+ 		    "only trivially copyable types can be contained");
+ 		static_assert(!__is_pointer(T) || (acquisition == kValueNoCopy),
+ 		    "pointers cannot be contained");
+-		static_assert(XNU_NO_TYPE_BUILTINS || KALLOC_TYPE_IS_DATA_ONLY(T) || (acquisition == kValueNoCopy),
+-		    "only plain data types can be contained (consider using OSValueObject)");
++#if !XNU_NO_TYPE_BUILTINS
++		static_assert(KALLOC_TYPE_IS_DATA_ONLY(T) || (acquisition == kValueNoCopy),
++		    "only plain data types can be contained (consider using OSValueObject)");
++#endif
+ 		return 0; // C++11 does not support void-returning constexpr functions
+ 	}
+ #else

@@ -143,8 +143,10 @@ jobs:
           name: kernel-build-diagnostics
           path: |
             kernel-build.log
-            xnu-src/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/iokit/DriverKit
-            xnu-src/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/iokit/Tests/TestServices
+            xnu-src/BUILD/obj/**/DriverKit/*.h
+            xnu-src/BUILD/obj/**/DriverKit/*.iig.cpp
+            xnu-src/BUILD/obj/**/TestServices/*.h
+            xnu-src/BUILD/obj/**/TestServices/*.iig.cpp
           if-no-files-found: warn
 
       - uses: actions/upload-artifact@v4

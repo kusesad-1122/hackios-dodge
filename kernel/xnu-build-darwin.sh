@@ -19,11 +19,11 @@ ARCH=${XNU_ARCH:-arm64e}
 MACH=${MACHINE:-BCM2837}
 VER=${RC_DARWIN_KERNEL_VERSION:-12377.121.6}
 
-# ARCH_CONFIG names the machine configuration (ARM64), not the architecture:
+# ARCH_CONFIGS selects XNU's architecture configuration (ARM64), not the ABI:
 # MakeInc.def line 382 reads
 #     ARCH_FLAGS_ARM64 = -arch $(ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG)
 # so arm64e goes in through ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG. Passing
-# ARCH_CONFIG=arm64e picks a configuration that does not exist and the build
+# ARCH_CONFIGS=arm64e picks a configuration that does not exist and the build
 # falls back to the host's own (that is what
 # "build_setup_bootstrap_DEVELOPMENT^X86_64^NONE" in an earlier run meant).
 
@@ -64,8 +64,9 @@ exec make \
 	BUILD_LTO=0 \
 	DO_CTFMERGE=0 \
 	BUILD_DSYM=0 \
-	ARCH_CONFIG=ARM64 \
-	MACHINE_CONFIG="$MACH" \
+	ARCH_CONFIGS=ARM64 \
+	MACHINE_CONFIGS="$MACH" \
+	KERNEL_CONFIGS=DEVELOPMENT \
 	ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG="$ARCH" \
 	RC_DARWIN_KERNEL_VERSION="$VER" \
 	"$@" \
