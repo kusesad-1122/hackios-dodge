@@ -59,6 +59,11 @@ echo
 # symbolsets, and the kernel file is written before them. Both dada's notes and
 # base/xnu/README.md say the same: judge by the file, not by make's exit status.
 exec make \
+	SDKROOT="$SDK" \
+	BUILD_WERROR=0 \
+	BUILD_LTO=0 \
+	DO_CTFMERGE=0 \
+	BUILD_DSYM=0 \
 	ARCH_CONFIG=ARM64 \
 	MACHINE_CONFIG="$MACH" \
 	ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG="$ARCH" \

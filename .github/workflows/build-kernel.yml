@@ -88,7 +88,12 @@ jobs:
           MACHINE: BCM2837
           RC_DARWIN_KERNEL_VERSION: 12377.121.6
         run: |
-          bash ../kernel/xnu-build-darwin.sh -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -120
+          # make -k may fail after linking; the next step verifies the actual kernel.
+          set +e
+          bash ../kernel/xnu-build-darwin.sh -j"$(sysctl -n hw.ncpu)" 2>&1 | tee "$GITHUB_WORKSPACE/kernel-build.log"
+          make_status=${PIPESTATUS[0]}
+          set -e
+          echo "make exit status: $make_status"
 
       - name: the kernel must exist
         run: |
@@ -106,22 +111,41 @@ jobs:
           python3 - "$K" <<'PY'
           import struct, sys
           d = open(sys.argv[1], 'rb').read(12)
-          magic, cputype, cpusub = struct.unpack('<Iii', d)
+          magic, cputype, cpusub = struct.unpack('<III', d)
+          assert magic == 0xfeedfacf, 'not a 64-bit Mach-O'
+          assert cputype == 0x0100000c, 'not ARM64'
+          assert cpusub & 0x00ffffff == 2, 'not arm64e'
+          assert cpusub & 0x80000000, 'pointer-authentication ABI bit missing'
           print('  cpusubtype %#010x  ptrauth %s' % (
               cpusub & 0xffffffff,
               'SET (arm64e)' if cpusub & 0x80000000 else 'CLEAR (arm64, wrong!)'))
           PY
           echo
           echo "=== the SoC layer must be in it ==="
+          nm -n "$K" > "$RUNNER_TEMP/kernel-symbols.txt"
           for s in _hakios_soc_device _hakios_soc_facts _hakios_soc_is_sm8750; do
             printf '  %-26s ' "$s"
-            nm -n "$K" 2>/dev/null | grep -q " $s\$" && echo present || echo ABSENT
+            grep -q " $s\$" "$RUNNER_TEMP/kernel-symbols.txt" || { echo "::error::missing symbol $s"; exit 1; }
+            echo present
           done
           echo "=== the phone's names ==="
+          strings "$K" > "$RUNNER_TEMP/kernel-strings.txt"
           for n in dodge dada sm8750; do
             printf '  %-10s ' "$n"
-            strings "$K" | grep -qx "$n" && echo present || echo absent
+            grep -qx "$n" "$RUNNER_TEMP/kernel-strings.txt" || { echo "::error::missing device name $n"; exit 1; }
+            echo present
           done
+
+      - name: save build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build-diagnostics
+          path: |
+            kernel-build.log
+            xnu-src/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/iokit/DriverKit
+            xnu-src/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/iokit/Tests/TestServices
+          if-no-files-found: warn
 
       - uses: actions/upload-artifact@v4
         with:
