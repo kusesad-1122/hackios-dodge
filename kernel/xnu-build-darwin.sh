@@ -44,7 +44,7 @@ esac
 
 # On Darwin the toolchain is Xcode's. Say where, explicitly, rather than relying
 # on the runner's defaults.
-SDK=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)
+SDK=${XNU_SDK_PATH:-$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)}
 [ -d "$SDK" ] || { echo "xnu-build: no iphoneos SDK from xcrun"; exit 1; }
 
 echo "xnu-build: tree      $PWD"

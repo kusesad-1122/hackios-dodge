@@ -80,11 +80,23 @@ jobs:
               || echo "  could not write to $SDK (not fatal yet)"
           done
 
+      - name: build kernel dependencies
+        working-directory: xnu-src
+        env:
+          XNU_SRC: ${{ github.workspace }}/xnu-src
+          XNU_ARCH: arm64e
+          XNU_SDK_PATH: ${{ github.workspace }}/xnu-src/BUILD/deps/iPhoneOS.xnu.sdk
+          MACHINE: BCM2837
+          RC_DARWIN_KERNEL_VERSION: 12377.121.6
+        run: |
+          bash ../kernel/xnu-deps-darwin.sh 2>&1 | tee "$GITHUB_WORKSPACE/kernel-deps.log"
+
       - name: build
         working-directory: xnu-src
         env:
           XNU_SRC: ${{ github.workspace }}/xnu-src
           XNU_ARCH: arm64e
+          XNU_SDK_PATH: ${{ github.workspace }}/xnu-src/BUILD/deps/iPhoneOS.xnu.sdk
           MACHINE: BCM2837
           RC_DARWIN_KERNEL_VERSION: 12377.121.6
         run: |
@@ -143,6 +155,8 @@ jobs:
           name: kernel-build-diagnostics
           path: |
             kernel-build.log
+            kernel-deps.log
+            xnu-src/BUILD/deps/exporthdrs.log
             xnu-src/BUILD/obj/**/DriverKit/*.h
             xnu-src/BUILD/obj/**/DriverKit/*.iig.cpp
             xnu-src/BUILD/obj/**/TestServices/*.h
