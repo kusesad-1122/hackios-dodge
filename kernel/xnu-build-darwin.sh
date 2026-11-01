@@ -11,6 +11,7 @@
 #     bash kernel/xnu-build-darwin.sh
 set -u
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TREE=${XNU_SRC:-$PWD}
 cd "$TREE" || { echo "no tree at $TREE"; exit 1; }
 [ -f makedefs/MakeInc.def ] || { echo "$TREE is not an XNU tree"; exit 1; }
@@ -60,6 +61,8 @@ echo
 # base/xnu/README.md say the same: judge by the file, not by make's exit status.
 exec make \
 	SDKROOT="$SDK" \
+	SDKROOT_RESOLVED="$SDK" \
+	XCRUN="/bin/bash $SCRIPT_DIR/xnu-xcrun-darwin.sh" \
 	BUILD_WERROR=0 \
 	BUILD_LTO=0 \
 	DO_CTFMERGE=0 \

@@ -89,6 +89,7 @@ jobs:
           MACHINE: BCM2837
           RC_DARWIN_KERNEL_VERSION: 12377.121.6
         run: |
+          set -euo pipefail
           bash ../kernel/xnu-deps-darwin.sh 2>&1 | tee "$GITHUB_WORKSPACE/kernel-deps.log"
 
       - name: build
