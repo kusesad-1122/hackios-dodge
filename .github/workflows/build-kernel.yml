@@ -92,6 +92,14 @@ jobs:
           set -euo pipefail
           bash ../kernel/xnu-deps-darwin.sh 2>&1 | tee "$GITHUB_WORKSPACE/kernel-deps.log"
 
+      - name: build Wi-Fi object
+        working-directory: xnu-src
+        env:
+          XNU_SRC: ${{ github.workspace }}/xnu-src
+        run: |
+          set -euo pipefail
+          bash ../kernel/xnu-ath12k-darwin.sh 2>&1 | tee "$GITHUB_WORKSPACE/kernel-wifi.log"
+
       - name: build
         working-directory: xnu-src
         env:
@@ -102,6 +110,8 @@ jobs:
           RC_DARWIN_KERNEL_VERSION: 12377.121.6
         run: |
           # make -k may fail after linking; the next step verifies the actual kernel.
+          export REDWOOD_OBJECTS="$XNU_SRC/BUILD/wifi/xnu-deps/build/ath12k/out/ath12k.o"
+          test -s "$REDWOOD_OBJECTS"
           set +e
           bash ../kernel/xnu-build-darwin.sh -j"$(sysctl -n hw.ncpu)" 2>&1 | tee "$GITHUB_WORKSPACE/kernel-build.log"
           make_status=${PIPESTATUS[0]}
@@ -157,6 +167,9 @@ jobs:
           path: |
             kernel-build.log
             kernel-deps.log
+            kernel-wifi.log
+            xnu-src/BUILD/wifi/xnu-deps/build/ath12k/out/*.err
+            xnu-src/BUILD/wifi/xnu-deps/build/ath12k/obj/*.err
             xnu-src/BUILD/deps/exporthdrs.log
             xnu-src/BUILD/obj/**/DriverKit/*.h
             xnu-src/BUILD/obj/**/DriverKit/*.iig.cpp

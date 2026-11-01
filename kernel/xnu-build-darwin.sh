@@ -60,6 +60,7 @@ echo
 # symbolsets, and the kernel file is written before them. Both dada's notes and
 # base/xnu/README.md say the same: judge by the file, not by make's exit status.
 exec make \
+	REDWOOD_OBJECTS="${REDWOOD_OBJECTS:-}" \
 	SDKROOT="$SDK" \
 	SDKROOT_RESOLVED="$SDK" \
 	XCRUN="/bin/bash $SCRIPT_DIR/xnu-xcrun-darwin.sh" \
