@@ -19,6 +19,14 @@ ARCH=${XNU_ARCH:-arm64e}
 MACH=${MACHINE:-BCM2837}
 VER=${RC_DARWIN_KERNEL_VERSION:-12377.121.6}
 
+# ARCH_CONFIG names the machine configuration (ARM64), not the architecture:
+# MakeInc.def line 382 reads
+#     ARCH_FLAGS_ARM64 = -arch $(ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG)
+# so arm64e goes in through ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG. Passing
+# ARCH_CONFIG=arm64e picks a configuration that does not exist and the build
+# falls back to the host's own (that is what
+# "build_setup_bootstrap_DEVELOPMENT^X86_64^NONE" in an earlier run meant).
+
 # The objects of an arm64 and an arm64e build land in the same directory (the
 # machine configuration names it, not the architecture), so make cannot tell
 # them apart. Start over when the architecture changes.
@@ -51,8 +59,9 @@ echo
 # symbolsets, and the kernel file is written before them. Both dada's notes and
 # base/xnu/README.md say the same: judge by the file, not by make's exit status.
 exec make \
-	ARCH_CONFIG="$ARCH" \
+	ARCH_CONFIG=ARM64 \
 	MACHINE_CONFIG="$MACH" \
+	ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG="$ARCH" \
 	RC_DARWIN_KERNEL_VERSION="$VER" \
 	"$@" \
 	-k
