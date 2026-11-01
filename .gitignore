@@ -1,0 +1,15 @@
+# ignore the working directories that hold the clone of dada, the WSL build tree
+# and the phone's own firmware/partition dumps
+.work/
+port/hakios-arm64e-dada/
+port/xnu-src/
+backup/out/
+artifacts/
+test/
+*.img
+*.tar.xz
+*.tar.gz
+
+# python
+__pycache__/
+*.pyc

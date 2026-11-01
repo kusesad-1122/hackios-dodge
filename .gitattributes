@@ -1,0 +1,15 @@
+# The kernel patches are applied with `git apply` on a Linux/macOS runner. A CRLF
+# conversion turns every hunk into a mismatch, so they stay byte-for-byte as
+# committed.
+*.patch  -text
+*.diff   -text
+
+# Everything else is text; let git normalise it to LF in the repository.
+* text=auto eol=lf
+
+# Images and archives are binary.
+*.png  binary
+*.jpg  binary
+*.img  binary
+*.xz   binary
+*.gz   binary

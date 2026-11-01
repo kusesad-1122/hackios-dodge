@@ -1,0 +1,101 @@
+name: build-kernel
+
+# Build the iOS 26 (xnu-12377.121.6) kernel with the dodge SoC layer.
+#
+# Why on macOS and not on Linux: Apple's XNU build expects Xcode's cctools, mig
+# and iig, and clang's Apple pointer-authentication builtins. A Linux clang knows
+# the __builtin_ptrauth_* names but has no implementation for them, so the arm64e
+# (HAS_APPLE_PAC) paths cannot compile there at all. base/xnu/README.md says the
+# same: on macOS the toolchain comes from Xcode and theos is not needed.
+#
+# The result is the kernel the loader boots: mach.development.bcm2837.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  kernel:
+    # Apple silicon: the build produces arm64e and needs an arm64 host toolchain.
+    runs-on: macos-14
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: toolchain
+        run: |
+          echo "=== what this runner has ==="
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version || true
+          echo
+          echo "=== the tools the build will use ==="
+          for t in clang ld mig iig unifdef csh; do
+            printf '%-10s ' "$t"
+            xcrun -f "$t" 2>/dev/null || command -v "$t" || echo MISSING
+          done
+
+      - name: fetch the kernel tree
+        run: |
+          set -e
+          # Apple's xnu-12377.121.6, then dada's rebase patch, then dodge's layer
+          git clone --depth 1 --branch xnu-12377.121.6 \
+            https://github.com/apple-oss-distributions/xnu.git xnu-src
+          cd xnu-src
+          git apply --whitespace=nowarn ../kernel/xnu-12377.121.6-dada.patch
+          git apply --whitespace=nowarn ../kernel/xnu-12377.121.6-dodge.patch
+          echo "patched: $(git status --short | wc -l) files touched"
+
+      - name: the two libraries the kernel links
+        run: |
+          set -e
+          cd xnu-src/xnu-deps
+          # On Darwin this takes mig/unifdef/csh and the SDK from Xcode instead of
+          # fetching and building them (xnu-env.sh sets XNU_HOST_DARWIN).
+          bash setup.sh --stage2 || {
+            echo "::warning::stage2 did not finish; the kernel may still link"
+          }
+
+      - name: build
+        run: |
+          set -e
+          cd xnu-src
+          export XNU_SRC="$PWD"
+          export XNU_ARCH=arm64e
+          export MACHINE=BCM2837
+          export RC_DARWIN_KERNEL_VERSION=12377.121.6
+          # -k is required: the remaining complaints all come after the link
+          bash xnu-build.sh -j"$(sysctl -n hw.ncpu)" -k 2>&1 | tail -60
+
+      - name: the kernel must exist
+        id: check
+        run: |
+          K=xnu-src/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          if [ ! -s "$K" ]; then
+            echo "::error::the kernel was not built"
+            exit 1
+          fi
+          ls -l "$K"
+          file "$K"
+          echo "=== the SoC layer must be in it ==="
+          for s in _hakios_soc_device _hakios_soc_facts _hakios_soc_is_sm8750; do
+            printf '%-26s ' "$s"
+            nm -n "$K" 2>/dev/null | grep -q " $s\$" && echo "present" || echo "ABSENT"
+          done
+          echo "=== the phone's names ==="
+          for n in dodge dada sm8750; do
+            printf '%-10s ' "$n"
+            strings "$K" | grep -qx "$n" && echo present || echo absent
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-dodge
+          path: xnu-src/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          if-no-files-found: error
