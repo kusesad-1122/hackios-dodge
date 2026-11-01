@@ -97,3 +97,5 @@ check-*.py                          the checkers
 ## Licence
 
 dada's tree is built on Apple's open-source XNU; the patches here carry the same terms.
+
+<!-- build trigger: 2026-11-01T15:53:30.6671293+08:00 -->
