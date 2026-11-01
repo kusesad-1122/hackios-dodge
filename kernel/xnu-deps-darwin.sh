@@ -57,9 +57,9 @@ bash "$SCRIPT_DIR/xnu-build-darwin.sh" -j"$(sysctl -n hw.ncpu)" exporthdrs \
 HEADERS="$TREE/BUILD/obj/EXPORT_HDRS"
 [ -d "$HEADERS/osfmk" ] || { echo "XNU headers were not exported"; exit 1; }
 
-# These archives become part of XNU itself, so use its private interfaces and ABI.
+# Both archives use the kernel ABI; each library selects its own private headers.
 COMMON=(-target "$ARCH-apple-ios$SDK_VERSION" -isysroot "$SDK" -c -Os -mkernel
-    -nostdinc -fno-builtin -DKERNEL=1 -DKERNEL_PRIVATE=1 -DXNU_KERNEL_PRIVATE=1
+    -nostdinc -fno-builtin -DKERNEL=1 -DKERNEL_PRIVATE=1
     -DPRIVATE=1 -D__DARWIN_64_BIT_INO_T=1 -DARM64_BOARD_CONFIG_BCM2837)
 for area in osfmk bsd libkern pexpert iokit security; do
     COMMON+=("-I$HEADERS/$area")
@@ -67,7 +67,7 @@ done
 COMMON+=("-I$TREE/EXTERNAL_HEADERS" "-isystem" "$CLANG_RESOURCES/include"
     "-idirafter" "$SDK/usr/include")
 
-"$CLANG" "${COMMON[@]}" \
+"$CLANG" "${COMMON[@]}" -DXNU_KERNEL_PRIVATE=1 \
     -DDISPATCH_USE_DTRACE=0 -DOS_ATOMIC_CONFIG_MEMORY_ORDER_DEPENDENCY=1 \
     -DOS_ATOMIC_CONFIG_STARVATION_FREE_ONLY=0 -DOS_FIREHOSE_SPI=1 \
     -I"$WORK/libdispatch" -I"$WORK/libdispatch/src" -I"$WORK/libdispatch/src/firehose" \
