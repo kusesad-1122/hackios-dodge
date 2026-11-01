@@ -15,8 +15,11 @@ on:
 
 jobs:
   kernel:
-    runs-on: macos-14
-    timeout-minutes: 120
+    # macos-15 carries Xcode 16; macos-14 only has 15.4, whose MacOSX SDK has no
+    # usr/local/libexec/availability.pl, and bsd/sys/Makefile needs it to
+    # generate _symbol_aliasing.h.
+    runs-on: macos-15
+    timeout-minutes: 150
 
     steps:
       - uses: actions/checkout@v4
@@ -33,18 +36,52 @@ jobs:
             xcrun -f "$t" 2>/dev/null || command -v "$t" || echo MISSING
           done
 
+      - name: the kitchen sink the XNU build asks for
+        run: |
+          # bsd/sys/Makefile wants usr/local/libexec/availability.pl out of the
+          # MacOSX SDK. Xcode 16's SDK does not ship it either; the
+          # AvailabilityVersions release builds it.
+          set -eux
+          git clone -q --depth 1 https://github.com/apple-oss-distributions/AvailabilityVersions.git avaid
+          cd avaid
+          if [ -f Makefile ]; then
+            make -s 2>&1 | tail -5 || true
+          fi
+          find . -name 'availability.pl' -o -name 'availability.py' | head -5
+          cd ..
+
       - name: the kernel tree
         run: |
           set -eux
           git clone --depth 1 --branch xnu-12377.121.6 \
             https://github.com/apple-oss-distributions/xnu.git xnu-src
           cd xnu-src
-          # Two patches, in this order: dada's rebase (the iOS 26 arm64e backend),
-          # then this repository's increment on top of it.
           git apply --whitespace=nowarn ../kernel/xnu-12377.121.6-dada.patch
           git apply --whitespace=nowarn ../kernel/xnu-12377.121.6-dodge.patch
           echo "patched files:"
           git status --short | head -20
+
+      - name: give availability.pl to every SDK that asks for one
+        run: |
+          set -eux
+          AP=$(find "$GITHUB_WORKSPACE/avaid" -name 'availability.pl' | head -1)
+          [ -n "$AP" ] || { echo "::error::AvailabilityVersions did not build availability.pl"; exit 1; }
+          chmod +x "$AP"
+          echo "found: $AP"
+          # the build looks for it inside each SDK's usr/local/libexec
+          for SDK in $(xcodebuild -showsdks -json 2>/dev/null \
+                       | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+for s in d:
+    print(s.get("sdkPath",""))' 2>/dev/null | sort -u) \
+                     $(xcrun --sdk macosx --show-sdk-path) \
+                     $(xcrun --sdk iphoneos --show-sdk-path); do
+            [ -d "$SDK" ] || continue
+            mkdir -p "$SDK/usr/local/libexec"
+            cp -f "$AP" "$SDK/usr/local/libexec/availability.pl" 2>/dev/null \
+              && echo "  installed into $SDK" \
+              || echo "  could not write to $SDK (not fatal yet)"
+          done
 
       - name: build
         working-directory: xnu-src
@@ -54,13 +91,14 @@ jobs:
           MACHINE: BCM2837
           RC_DARWIN_KERNEL_VERSION: 12377.121.6
         run: |
-          bash ../kernel/xnu-build-darwin.sh -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -100
+          bash ../kernel/xnu-build-darwin.sh -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -120
 
       - name: the kernel must exist
         run: |
           K=xnu-src/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
           if [ ! -s "$K" ]; then
             echo "::error::the kernel was not built"
+            echo "--- what did get produced ---"
             find xnu-src/BUILD/obj -name 'mach.*' 2>/dev/null | head -10
             exit 1
           fi
