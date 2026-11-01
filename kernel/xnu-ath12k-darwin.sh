@@ -5,9 +5,11 @@ TREE=${XNU_SRC:-$PWD}
 ROOT="$TREE/BUILD/wifi"
 BASE=f1ae906fcc43ba8f763663257724ba938fb820ab
 mkdir -p "$ROOT/tools" "$ROOT/xnu-deps/host/bin"
-curl --fail --location \
-    "https://raw.githubusercontent.com/superboyyy/hakios-arm64e-dada/$BASE/base/tools/mk-ath12k.sh" \
-    -o "$ROOT/tools/mk-ath12k.sh"
+for tool in mk-ath12k.sh ath12k-qdss.py ath12k-olcpr.py ath12k-cbc.py; do
+    curl --fail --location \
+        "https://raw.githubusercontent.com/superboyyy/hakios-arm64e-dada/$BASE/base/tools/$tool" \
+        -o "$ROOT/tools/$tool"
+done
 
 # This staged script is a regular file, so dirname is sufficient on both hosts.
 python3 - "$ROOT/tools/mk-ath12k.sh" <<'PY'
