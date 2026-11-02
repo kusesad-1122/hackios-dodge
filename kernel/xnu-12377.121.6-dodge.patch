@@ -1,18 +1,21 @@
 diff --git a/bsd/conf/files b/bsd/conf/files
-index c99e22e..966a7be 100644
+index c99e22e..ea08f3b 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -112,6 +112,7 @@ bsd/dev/redwood_input.c	standard
+@@ -112,6 +112,10 @@ bsd/dev/redwood_input.c	standard
  bsd/dev/redwood_virtio_input.c	standard
  bsd/dev/redwood_goodix.c	standard
  bsd/dev/hakios_dada_touch.c	standard
++bsd/dev/redwood_s3910.c	standard
++bsd/dev/redwood_s3910_board.c	standard
++bsd/dev/redwood_s3910_protocol.c	standard
 +bsd/dev/hakios_soc.c               standard
  bsd/dev/hakios_dada_gauge.c	standard
  bsd/dev/hakios_dada_amp.c	standard
  bsd/dev/hakios_dada_audio.c	standard
 diff --git a/bsd/dev/hakios_soc.c b/bsd/dev/hakios_soc.c
 new file mode 100644
-index 0000000..70cbcd2
+index 0000000..9d846db
 --- /dev/null
 +++ b/bsd/dev/hakios_soc.c
 @@ -0,0 +1,230 @@
@@ -56,7 +59,7 @@ index 0000000..70cbcd2
 +
 +#include <mach/machine/vm_types.h>
 +#include <mach/machine.h>
-+#include <kern/startup.h>        /* __startup_func */
++#include <kern/startup.h>        /* __startup_func: the read must happen before PE_init_iokit() */
 +#include <libkern/libkern.h>
 +#include <pexpert/pexpert.h>
 +#include <pexpert/device_tree.h>
@@ -322,7 +325,7 @@ index 0000000..07bb909
 +
 +#endif /* _HAKIOS_SOC_H */
 diff --git a/bsd/dev/redwood_adsp.c b/bsd/dev/redwood_adsp.c
-index 39ccd67..d96ec67 100644
+index 39ccd67..5cc2aa7 100644
 --- a/bsd/dev/redwood_adsp.c
 +++ b/bsd/dev/redwood_adsp.c
 @@ -94,6 +94,8 @@
@@ -333,112 +336,779 @@ index 39ccd67..d96ec67 100644
 +#include "hakios_soc.h"        /* which phone is this: its addresses, from its device tree */
  #include <sys/redwood_audio.h>
  #include <sys/redwood_input.h>
-
-@@ -4742,17 +4744,38 @@ redwood_adsp_init(void)
+ 
+@@ -4742,19 +4744,40 @@ redwood_adsp_init(void)
  	if (last_step == 0 && (!PE_parse_boot_argn("adsp", &on, sizeof(on)) || on != 1)) {
  		return;
  	}
 -	if (option("dadaadsp")) {
 -		dada = true;
-+	/*
-+ * The audio DSP's addresses come from the SoC layer, which read them out of the
-+ * phone's own device tree. On this phone (dodge) the DSP window is
-+ * 0x5080000 bytes; on the Xiaomi 15 (dada) it is 0x4580000 -- so a hardcoded
-+ * value would be wrong on one of them, and the ADSP's shared memory runs past
-+ * the end of the window when it is.
-+ *
-+ * dadaadsp=1 still forces the dada path (for a phone whose tree says nothing).
-+ */
-+const struct hakios_soc_facts *soc = hakios_soc_facts();
-+if (option("dadaadsp") || (soc != NULL && soc->adsp_memory != 0)) {
-+	dada = true;
-+	if (soc != NULL) {
-+		smem_phys = soc->smem_phys;
-+		cmd_db_phys = soc->cmd_db_phys;
-+		adsp_memory = soc->adsp_memory;
-+		adsp_memory_size = soc->adsp_memory_size;
-+		ipcc.phys = soc->ipcc_phys;
-+		rsc.phys = soc->rsc_phys;
-+	} else {
-+		/* no tree: the Xiaomi 15's addresses, as they always were */
- 		smem_phys = 0x81d00000UL;
- 		cmd_db_phys = 0x81c60000UL;
- 		adsp_memory = 0x9ee00000u;
- 		adsp_memory_size = 0x04580000u;
- 		ipcc.phys = 0x00406000;
- 		rsc.phys = 0x16520000;
+-		smem_phys = 0x81d00000UL;
+-		cmd_db_phys = 0x81c60000UL;
+-		adsp_memory = 0x9ee00000u;
+-		adsp_memory_size = 0x04580000u;
+-		ipcc.phys = 0x00406000;
+-		rsc.phys = 0x16520000;
 -		glink.channel[CHANNEL_APR].name = "adsp_apps";     /* GPR, AudioReach's */
 -		printf("adsp: the Xiaomi 15's (dada) audio DSP: its addresses and its companion image (dadaadsp=1)\n");
--	} else if (pe_arm_get_soc_base_phys() != REDWOOD_SOC_BASE) {
-+	}
-+	glink.channel[CHANNEL_APR].name = "adsp_apps";     /* GPR, AudioReach's */
-+	printf("adsp: the SM8750's audio DSP: its addresses from the device tree (%s)\n",
-+		hakios_soc_device() ? hakios_soc_device() : "dada");
-+	} else if (pe_arm_get_soc_base_phys() != REDWOOD_SOC_BASE) {
- 		printf("adsp: adsp=1 and adsp_step=N are for the phone's audio DSP, and this is not the phone\n");
- 		return;
++	/*
++	 * The audio DSP's addresses come from the SoC layer, which read them out of the
++	 * phone's own device tree. On this phone (dodge) the DSP window is
++	 * 0x5080000 bytes; on the Xiaomi 15 (dada) it is 0x4580000 -- so a hardcoded
++	 * value would be wrong on one of them, and the ADSP's shared memory runs past
++	 * the end of the window when it is.
++	 *
++	 * dadaadsp=1 still forces the dada path (for a phone whose tree says nothing).
++	 */
++	const struct hakios_soc_facts *soc = hakios_soc_facts();
++	if (option("dadaadsp") || (soc != NULL && soc->adsp_memory != 0)) {
++			dada = true;
++			if (soc != NULL) {
++					smem_phys = soc->smem_phys;
++					cmd_db_phys = soc->cmd_db_phys;
++					adsp_memory = soc->adsp_memory;
++					adsp_memory_size = soc->adsp_memory_size;
++					ipcc.phys = soc->ipcc_phys;
++					rsc.phys = soc->rsc_phys;
++			} else {
++					/* no tree: the Xiaomi 15's addresses, as they always were */
++					smem_phys = 0x81d00000UL;
++					cmd_db_phys = 0x81c60000UL;
++					adsp_memory = 0x9ee00000u;
++					adsp_memory_size = 0x04580000u;
++					ipcc.phys = 0x00406000;
++					rsc.phys = 0x16520000;
++			}
++			glink.channel[CHANNEL_APR].name = "adsp_apps";     /* GPR, AudioReach's */
++			printf("adsp: the SM8750's audio DSP: its addresses from the device tree (%s)\n",
++				hakios_soc_device() ? hakios_soc_device() : "dada");
+ 	} else if (pe_arm_get_soc_base_phys() != REDWOOD_SOC_BASE) {
+-		printf("adsp: adsp=1 and adsp_step=N are for the phone's audio DSP, and this is not the phone\n");
+-		return;
++			printf("adsp: adsp=1 and adsp_step=N are for the phone's audio DSP, and this is not the phone\n");
++			return;
  	}
+ 	if (last_step == 0) {
+ 		/* all of it, on a thread of its own, and left up (on dada not step 11: SM8750's audio services are
 diff --git a/bsd/dev/redwood_goodix.c b/bsd/dev/redwood_goodix.c
+index f969cbd..fc6d969 100644
 --- a/bsd/dev/redwood_goodix.c
 +++ b/bsd/dev/redwood_goodix.c
-@@ -1027,7 +1027,10 @@
+@@ -1027,7 +1027,10 @@ focaltech_write(uint8_t address, const uint8_t *data, uint32_t length)
  #define FTS_ROMBOOT_CMD_START_APP       0x08
  #define FTS_FLASH_PACKET_LENGTH         32		/* bytes per PRAM write */
-
--#include "redwood_focaltech_fw.h"
+ 
 +/* Only the optional redwood FocalTech path needs this vendor firmware. */
 +#if __has_include("redwood_focaltech_fw.h")
-+#include "redwood_focaltech_fw.h"
+ #include "redwood_focaltech_fw.h"
 +#endif
-
+ 
  /*
   * Vendor fts_read_bootid(): send { 0x55, 0xAA } as a 2-byte framed write (treated as a write of
-@@ -1145,8 +1148,14 @@
+@@ -1145,6 +1148,12 @@ focaltech_probe(bool verbose)
  		return true;
  	}
-
--	if (!focaltech_enter_boot_rom()) {
--		if (verbose) {
+ 
 +#ifndef FOCALTECH_FW_LENGTH
 +	if (verbose) {
 +		printf("focaltech: firmware is not embedded; cold initialization unavailable\n");
 +	}
 +	return false;
 +#else
-+	if (!focaltech_enter_boot_rom()) {
-+		if (verbose) {
+ 	if (!focaltech_enter_boot_rom()) {
+ 		if (verbose) {
  			printf("focaltech: chip not in boot ROM; last read runtime %02x %02x\n", high, low);
- 		}
- 		return false;
-@@ -1168,10 +1177,11 @@
- 		return true;
+@@ -1171,6 +1180,7 @@ focaltech_probe(bool verbose)
+ 		printf("focaltech: firmware did not come up (last runtime read %02x %02x)\n", high, low);
  	}
- 	if (verbose) {
--		printf("focaltech: firmware did not come up (last runtime read %02x %02x)\n", high, low);
--	}
--	return false;
--}
-+		printf("focaltech: firmware did not come up (last runtime read %02x %02x)\n", high, low);
-+	}
-+	return false;
+ 	return false;
 +#endif /* FOCALTECH_FW_LENGTH */
-+}
-
+ }
+ 
  /* ---- FocalTech touch reports --------------------------------------------------------------------- */
-
-diff --git a/libkern/libkern/c++/OSData.h b/libkern/libkern/c++/OSData.h
---- a/libkern/libkern/c++/OSData.h
-+++ b/libkern/libkern/c++/OSData.h
-@@ -967,8 +967,10 @@
- 		    "only trivially copyable types can be contained");
- 		static_assert(!__is_pointer(T) || (acquisition == kValueNoCopy),
- 		    "pointers cannot be contained");
--		static_assert(XNU_NO_TYPE_BUILTINS || KALLOC_TYPE_IS_DATA_ONLY(T) || (acquisition == kValueNoCopy),
--		    "only plain data types can be contained (consider using OSValueObject)");
-+#if !XNU_NO_TYPE_BUILTINS
-+		static_assert(KALLOC_TYPE_IS_DATA_ONLY(T) || (acquisition == kValueNoCopy),
-+		    "only plain data types can be contained (consider using OSValueObject)");
-+#endif
- 		return 0; // C++11 does not support void-returning constexpr functions
+@@ -1505,7 +1515,11 @@ redwood_goodix_init(void)
+ 	uint32_t enabled = 0;
+ 	thread_t thread;
+ 
+-	if (!PE_parse_boot_argn("touchscreen", &enabled, sizeof(enabled)) || !enabled) {
++	/* Only touchscreen=1 is the POCO X5 Pro's Goodix/FocalTech panel. With `!enabled` any
++	 * non-zero value started this worker too, so touchscreen=2 (the OnePlus 13's S3910 over the
++	 * loader's GPIO lease, bsd/dev/redwood_s3910.c) also ran bring_up() against this phone's
++	 * GENI/GPIO/RPMh addresses and wrote registers outside the lease the loader verified. */
++	if (!PE_parse_boot_argn("touchscreen", &enabled, sizeof(enabled)) || enabled != 1) {
+ 		return;
  	}
- #else
+ 	PE_parse_boot_argn("touch_flip", &flip, sizeof(flip));
+diff --git a/bsd/dev/redwood_s3910.c b/bsd/dev/redwood_s3910.c
+new file mode 100644
+index 0000000..8e680f8
+--- /dev/null
++++ b/bsd/dev/redwood_s3910.c
+@@ -0,0 +1,121 @@
++/* SPDX-License-Identifier: BSD-2-Clause
++ * Dedicated OnePlus 13 driver; Goodix/FocalTech retain touchscreen=1.
++ * Select this driver using touchscreen=2. Only the worker may touch the bus.
++ */
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <libkern/libkern.h>
++#include <pexpert/pexpert.h>
++#include <sys/redwood_input.h>
++#include <sys/redwood_s3910.h>
++#include <sys/systm.h>
++
++extern void loader_log_putc(char);
++static int touch_say(const char *format,...) __printflike(1,2);
++static int touch_say(const char *format,...)
++{
++ char line[400];va_list ap;va_start(ap,format);
++ vsnprintf(line,sizeof(line),format,ap);va_end(ap);
++ for(const char *c=line;*c;c++)loader_log_putc(*c);
++ return printf("%s",line);
++}
++#define printf touch_say
++
++extern int sm8750_touch_bus_open(struct s3910_io *);
++extern void sm8750_touch_bus_close(void);
++extern kern_return_t thread_terminate(thread_t);
++static struct s3910 controller;
++static unsigned diagnostic_events;
++
++static void
++post(void *cookie, unsigned type, unsigned slot, uint32_t x, uint32_t y)
++{
++ (void)cookie;
++ if (diagnostic_events++ < 32)
++  printf("s3910: event type=%u slot=%u normalized=%u,%u\n", type, slot, x, y);
++ redwood_touch_post(type, slot, x, y);
++}
++
++static void
++s3910_worker(void *parameter, wait_result_t result)
++{
++ struct s3910_io io = { 0 };
++ int error, poll_us = 4000, stage = 1;
++ (void)parameter; (void)result;
++ PE_parse_boot_argn("touch_poll_us", &poll_us, sizeof(poll_us));
++ if (poll_us < 1000 || poll_us > 20000) poll_us = 4000;
++ PE_parse_boot_argn("touch_steps", &stage, sizeof(stage));
++ if (stage < 1 || stage > 4) {
++  printf("s3910: touch_steps must be 1..4; no hardware access\n");
++  goto done;
++ }
++ printf("s3910: requested stage %d; waiting for verified resource provider\n", stage);
++ io.event = post;
++ error = sm8750_touch_bus_open(&io);
++ if (error) {
++  printf("s3910: board bus unavailable (%d); no controller commands issued\n", error);
++  goto done;
++ }
++ error = s3910_probe(&controller, &io);
++ printf("s3910: startup header=%02x %02x %02x %02x version=%02x mode=%02x "
++  "part=%.16s extension=%02x %02x %02x %02x\n",
++  controller.startup_header[0], controller.startup_header[1],
++  controller.startup_header[2], controller.startup_header[3],
++  controller.identification[0], controller.identification[1],
++  (const char *)&controller.identification[2],
++  controller.startup_extension[0], controller.startup_extension[1],
++  controller.startup_extension[2], controller.startup_extension[3]);
++ printf("s3910: identify-length=%u max-write=%u\n",controller.startup_id_length,controller.max_write);
++ for(unsigned j=0;j<32;j+=8)
++  printf("s3910: id+%u %02x %02x %02x %02x %02x %02x %02x %02x\n",j,
++   controller.identification[j],controller.identification[j+1],controller.identification[j+2],controller.identification[j+3],
++   controller.identification[j+4],controller.identification[j+5],controller.identification[j+6],controller.identification[j+7]);
++ if (error) {
++  printf("s3910: startup identification refused (%d): need app firmware, v1, no CRC/RC\n", error);
++  goto done;
++ }
++ if (stage == 1) { printf("s3910: stage1 identify passed, max_write=%u\n", controller.max_write); goto done; }
++ error = s3910_read_app_info(&controller);
++ if (error) {
++  printf("s3910: app info refused error=%d cmd=%#x status=%#x length=%u\n", error, controller.last_command, controller.last_status, controller.length);
++  goto done;
++ }
++ printf("s3910: stage2 APP bounds=%ux%u slots=%u config=%u payload=%u\n", controller.max_x, controller.max_y, controller.max_objects, controller.config_size, controller.max_payload);
++ if (stage == 2) goto done;
++ error = s3910_enable_lbp(&controller);
++ if (error) {
++  printf("s3910: LBP setup refused (%d), command=%#x response=%#x\n",
++   error, controller.last_command, controller.last_status);
++  goto done;
++ }
++ printf("s3910: LBP ready, bounds %ux%u, %u slots, IRQ poll %dus\n",
++  controller.max_x, controller.max_y, controller.max_objects, poll_us);
++ if (stage == 3) { printf("s3910: stage3 LBP/readback passed; polling not started\n"); goto done; }
++ for (;;) {
++  error = s3910_poll(&controller);
++  if (error) {
++   printf("s3910: stopped (%d), code=%#x frames=%u bad=%u resets=%u hbp=%u\n",
++    error, controller.code, controller.frames, controller.bad_frames,
++    controller.resets, controller.ignored_hbp);
++   break;
++  }
++  delay_for_interval((uint32_t)poll_us, NSEC_PER_USEC);
++ }
++done:
++ s3910_release_all(&controller);
++ sm8750_touch_bus_close();
++ thread_terminate(current_thread());
++}
++
++void
++redwood_s3910_init(void)
++{
++ int selected = 0;
++ thread_t thread;
++ PE_parse_boot_argn("touchscreen", &selected, sizeof(selected));
++ if (selected != 2) return;
++ printf("s3910: OnePlus13 experimental LBP driver selected\n");
++ if (kernel_thread_start(s3910_worker, NULL, &thread) == KERN_SUCCESS)
++  thread_deallocate(thread);
++ else printf("s3910: cannot create worker\n");
++}
+diff --git a/bsd/dev/redwood_s3910_board.c b/bsd/dev/redwood_s3910_board.c
+new file mode 100644
+index 0000000..742ba9e
+--- /dev/null
++++ b/bsd/dev/redwood_s3910_board.c
+@@ -0,0 +1,197 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent
++ * Mode-0 loop adapted from tycykp/UniXNU-OnePlus-Ace5 giulia_touch_gpio.h,
++ * commit18f51ec652501c62e19dd4f1035dc51daa2a3361, and the HackiOS GPIO SPI
++ * fallback. OnePlus13 wiring is independently pinned in touch/REFERENCES.md.
++ * Fallible callbacks, snapshot ownership and restoration are local additions.
++ */
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++#ifndef OP13_BITBANG_H
++#define OP13_BITBANG_H
++#include <stdint.h>
++#include <stddef.h>
++struct op13_bitbang_io {
++ void *cookie;
++ int (*read)(void *,uint32_t,uint32_t *);
++ int (*write)(void *,uint32_t,uint32_t);
++ int (*delay)(void *,unsigned);
++};
++struct op13_bitbang {
++ struct op13_bitbang_io io;
++ uint32_t saved_cfg[4],saved_io[4];
++ unsigned owned,ready,poisoned;
++};
++int op13_bitbang_open(struct op13_bitbang *,const struct op13_bitbang_io *,int);
++int op13_bitbang_transfer(struct op13_bitbang *,const uint8_t *,uint8_t *,size_t);
++/* Caller holds panel reset low and supplies until this succeeds. */
++int op13_bitbang_cleanup(struct op13_bitbang *);
++#endif
++
++static uint32_t off(unsigned p,unsigned r){return (48u+p)*0x1000u+r;}
++static int rd(struct op13_bitbang *s,unsigned p,unsigned r,uint32_t *v)
++{return s->io.read(s->io.cookie,off(p,r),v);}
++static int wr(struct op13_bitbang *s,unsigned p,unsigned r,uint32_t v,uint32_t mask)
++{
++ uint32_t got;
++ if(s->io.write(s->io.cookie,off(p,r),v)||rd(s,p,r,&got))return -1;
++ return ((v^got)&mask)?-1:0;
++}
++static int level(struct op13_bitbang *s,unsigned p,unsigned high)
++{
++ uint32_t v;
++ if(p==0||rd(s,p,4,&v))return -1;
++ return wr(s,p,4,(v&~2u)|(high?2u:0),2);
++}
++static int config(struct op13_bitbang *s,unsigned p,unsigned output)
++{
++ static const uint32_t drive[4]={0x80,0x40,0x80,0x40};
++ return wr(s,p,0,(s->saved_cfg[p]&~0x3ffu)|drive[p]|(output?0x200u:0),0x3ff);
++}
++int op13_bitbang_open(struct op13_bitbang *s,const struct op13_bitbang_io *io,int enabled)
++{
++ if(!s||!io)return -5;
++ if(!enabled)return -3;
++ if(s->owned)return -6;
++ if(!io->read||!io->write||!io->delay)return -3;
++ s->io=*io;s->ready=s->poisoned=0;
++ for(unsigned i=0;i<4;i++){
++  if(rd(s,i,0,&s->saved_cfg[i])||rd(s,i,4,&s->saved_io[i]))return -1;
++  if(s->saved_cfg[i]&0x1800u)return -3;
++ }
++ /* A failed write may already have taken effect. Claim BEFORE first write. */
++ s->owned=1;
++ if(level(s,3,1)||config(s,3,1)||config(s,0,0)||
++    level(s,1,1)||config(s,1,1)||level(s,2,0)||config(s,2,1))return -1;
++ s->ready=1;return 0;
++}
++int op13_bitbang_transfer(struct op13_bitbang *s,const uint8_t *tx,uint8_t *rx,size_t n)
++{
++ if(!s||!s->ready||s->poisoned)return -6;
++ if(!n||n>1032||(!tx&&!rx))return -5;
++ if(level(s,2,0)||level(s,3,0)||s->io.delay(s->io.cookie,5))goto fail;
++ for(size_t i=0;i<n;i++){
++  uint8_t out=tx?tx[i]:255,in=0;
++  for(unsigned bit=0;bit<8;bit++){
++   uint32_t sample;
++   if(level(s,1,(out>>(7-bit))&1)||s->io.delay(s->io.cookie,5)||
++      level(s,2,1)||s->io.delay(s->io.cookie,5)||rd(s,0,4,&sample)||
++      level(s,2,0))goto fail;
++   in=(uint8_t)((in<<1)|(sample&1));
++  }
++  if(rx)rx[i]=in;
++ }
++ if(s->io.delay(s->io.cookie,5)||level(s,3,1)||s->io.delay(s->io.cookie,5))goto fail;
++ return 0;
++fail:
++ s->ready=0;s->poisoned=1;
++ (void)level(s,3,1);
++ return -1;
++}
++int op13_bitbang_cleanup(struct op13_bitbang *s)
++{
++ if(!s)return -5;
++ if(!s->owned)return 0;
++ s->ready=0;
++ /* Reset is held low by caller. Deassert CS before making all pins high-Z.
++  * Restore latches only while input, then restore the original configurations.
++  * Do not touch MISO's latch: it was never written by this transport. */
++ if(level(s,3,1))return -1;
++ for(unsigned i=0;i<4;i++){
++  uint32_t v;
++  if(rd(s,i,0,&v)||wr(s,i,0,(v&~0x3fcu),0x3fc))return -1;
++ }
++ for(unsigned i=1;i<4;i++){
++  uint32_t v;
++  if(rd(s,i,4,&v)||wr(s,i,4,(v&~2u)|(s->saved_io[i]&2u),2))return -1;
++ }
++ for(unsigned i=0;i<4;i++)if(wr(s,i,0,s->saved_cfg[i],0x3ff))return -1;
++ s->owned=0;return 0;
++}
++
++/* SPDX-License-Identifier: BSD-2-Clause
++ * GPIO-only board binding. Supplies/reset/pin snapshots belong to the resident
++ * loader, which retains them until a confirmed kernel return. No GENI access.
++ */
++#include <kern/clock.h>
++#include <libkern/libkern.h>
++#include <mach/mach_types.h>
++#include <pexpert/pexpert.h>
++#include <sys/redwood_s3910.h>
++#include <sys/systm.h>
++extern vm_offset_t ml_io_map(vm_offset_t,vm_size_t);
++static vm_offset_t gpio_bank;
++static struct op13_bitbang gpio_bus;
++static int gpio_allowed(uint32_t off)
++{
++ unsigned p=off/0x1000,r=off%0x1000;
++ return p>=48&&p<=51&&(r==0||r==4);
++}
++static int gpio_read(void *cookie,uint32_t off,uint32_t *v)
++{
++ (void)cookie;if(!gpio_bank||!v||!gpio_allowed(off))return -5;
++ __asm__ volatile("dsb sy" ::: "memory");
++ *v=*(volatile uint32_t *)(gpio_bank+off);
++ __asm__ volatile("dsb sy" ::: "memory");return 0;
++}
++static int gpio_write(void *cookie,uint32_t off,uint32_t v)
++{
++ (void)cookie;if(!gpio_bank||!gpio_allowed(off)||off==48*0x1000+4)return -5;
++ __asm__ volatile("dsb sy" ::: "memory");
++ *(volatile uint32_t *)(gpio_bank+off)=v;
++ __asm__ volatile("dsb sy" ::: "memory");return 0;
++}
++static int gpio_delay(void *cookie,unsigned us)
++{
++ (void)cookie;if(us>1000000)return -5;
++ delay_for_interval(us,NSEC_PER_USEC);return 0;
++}
++static int gpio_bus_read(void *cookie,uint8_t *p,size_t n)
++{return op13_bitbang_transfer(cookie,0,p,n);}
++static int gpio_bus_write(void *cookie,const uint8_t *p,size_t n)
++{return op13_bitbang_transfer(cookie,p,0,n);}
++static int gpio_irq(void *cookie)
++{
++ (void)cookie;if(!gpio_bus.ready||!gpio_bank)return -6;
++ uint32_t v=*(volatile uint32_t *)(gpio_bank+162*0x1000+4);
++ __asm__ volatile("dsb sy" ::: "memory");return !(v&1);
++}
++static void gpio_sleep(void *cookie,unsigned ms)
++{(void)cookie;while(ms--)delay_for_interval(1000,NSEC_PER_USEC);}
++int sm8750_touch_bus_open(struct s3910_io *io)
++{
++ int enabled=0;uint64_t pa=0;
++ if(!io)return S3910_RANGE;
++ PE_parse_boot_argn("sm8750_touch_hw",&enabled,sizeof(enabled));
++ if(enabled!=1||!PE_parse_boot_argn("touch_lease_pa",&pa,sizeof(pa))||
++    pa<0x80000000ULL||pa>=0x1000000000ULL||(pa&0x3fff)){
++  printf("sm8750-touch: no loader GPIO lease; no hardware writes\n");return S3910_UNSUPPORTED;
++ }
++ vm_offset_t lease=ml_io_map((vm_offset_t)pa,0x4000);
++ if(!lease)return S3910_IO;
++ static const uint32_t expected[12]={0x4f503133,1,48,0x0f100000,0x100000,48,49,50,51,161,162,5};
++ for(unsigned i=0;i<12;i++)if(((volatile uint32_t *)lease)[i]!=expected[i]){
++  printf("sm8750-touch: invalid immutable lease field %u; no GPIO writes\n",i);
++  return S3910_UNSUPPORTED;
++ }
++ gpio_bank=ml_io_map(0x0f100000,0x100000);
++ if(!gpio_bank)return S3910_IO;
++ static const uint32_t expected_cfg[4]={0x80,0x240,0x280,0x240};
++ for(unsigned i=0;i<4;i++){
++  uint32_t v;if(gpio_read(0,(48+i)*0x1000,&v)||
++    (v&0x3ff)!=expected_cfg[i]||(v&0x1800)){
++   printf("sm8750-touch: leased GPIO%u configuration changed; no writes\n",48+i);
++   return S3910_NOT_READY;
++  }
++ }
++ gpio_bus.io=(struct op13_bitbang_io){0,gpio_read,gpio_write,gpio_delay};
++ gpio_bus.ready=1;gpio_bus.poisoned=0; /* loader owns all snapshots and cleanup */
++ io->cookie=&gpio_bus;io->read=gpio_bus_read;io->write=gpio_bus_write;
++ io->irq_asserted=gpio_irq;io->sleep_ms=gpio_sleep;
++ printf("sm8750-touch: loader lease verified; mode0 GPIO SPI, 5us half-cycle, IRQ162 active-low\n");
++ return 0;
++}
++void sm8750_touch_bus_close(void)
++{
++ gpio_bus.ready=0;
++ /* No power/pin rollback while the kernel still owns its execution core. */
++ printf("sm8750-touch: worker stopped; loader retains supplies/pin snapshots until kernel return\n");
++}
+diff --git a/bsd/dev/redwood_s3910_protocol.c b/bsd/dev/redwood_s3910_protocol.c
+new file mode 100644
+index 0000000..6761be6
+--- /dev/null
++++ b/bsd/dev/redwood_s3910_protocol.c
+@@ -0,0 +1,249 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++#ifdef KERNEL
++#include <sys/redwood_s3910.h>
++#else
++#include "s3910.h"
++#endif
++
++/* Same byte-aligned entities as the vendor's custom_touch_format, without
++ * optional gesture ID. Firmware accepts this config before any touch is parsed.
++ */
++static const uint8_t touch_config[] = {
++ 0x18, 8, 0x01, 0x06, 8, 0x07, 8, 0x08, 16, 0x09, 16, 0x03, 0x00
++};
++static unsigned le16(const uint8_t *p) { return p[0] | ((unsigned)p[1] << 8); }
++static void zero(void *p, size_t n) { uint8_t *b = p; while (n--) *b++ = 0; }
++static int equal(const uint8_t *a, const uint8_t *b, size_t n)
++{ while (n--) if (*a++ != *b++) return 0; return 1; }
++
++void s3910_release_all(struct s3910 *d)
++{
++ unsigned i;
++ for (i = 0; i < S3910_MAX_OBJECTS; i++) {
++  if (d->slots[i].active && d->io.event)
++   d->io.event(d->io.cookie, S3910_UP, i,
++    (uint32_t)d->slots[i].x * 65535u / d->max_x,
++    (uint32_t)d->slots[i].y * 65535u / d->max_y);
++  d->slots[i].active = 0;
++ }
++}
++
++/* A v1 packet is header A5/code/length-le16, then a separate continued read
++ * A5/03/payload/5A. A zero-payload message ends at the initial header.
++ */
++static int receive(struct s3910 *d)
++{
++ uint8_t h[4], b[S3910_MAX_PAYLOAD + 3];
++ unsigned i, n;
++ if (d->io.read(d->io.cookie, h, sizeof(h))) return S3910_IO;
++ if (h[0] != 0xa5) return S3910_PROTOCOL;
++ d->code = h[1];
++ d->length = (uint16_t)le16(h + 2);
++ n = d->length;
++ if (n > S3910_MAX_PAYLOAD) return S3910_RANGE;
++ if (n) {
++  if (d->io.read(d->io.cookie, b, n + 3)) return S3910_IO;
++  if (b[0] != 0xa5 || b[1] != 3 || b[n + 2] != 0x5a)
++   return S3910_PROTOCOL;
++  for (i = 0; i < n; i++) d->payload[i] = b[i + 2];
++ }
++ if (d->code == 3 || d->code == 0xff) return S3910_PROTOCOL;
++ return S3910_OK;
++}
++
++static int wait_irq(struct s3910 *d)
++{
++ unsigned i;
++ for (i = 0; i < 1000; i++) {
++  int r = d->io.irq_asserted(d->io.cookie);
++  if (r < 0) return S3910_IO;
++  if (r) return 0;
++  d->io.sleep_ms(d->io.cookie, 1);
++ }
++ return S3910_TIMEOUT;
++}
++
++int s3910_probe(struct s3910 *d, const struct s3910_io *io)
++{
++ uint8_t h[4], b[32 + 7];
++ unsigned i, n;
++ int r;
++ if (!d || !io || !io->read || !io->write || !io->irq_asserted ||
++     !io->sleep_ms || !io->event) return S3910_RANGE;
++ zero(d, sizeof(*d));
++ d->io = *io;
++ r = wait_irq(d);
++ if (r) return r;
++ if (io->read(io->cookie, h, 4)) return S3910_IO;
++ for (i = 0; i < sizeof(h); i++) d->startup_header[i] = h[i];
++ /* The vendor v1 detector uses A5 framing and copies MIN(id struct,payload).
++  * OP13 hardware returns28 bytes, extending the common24-byte prefix. The
++  * length is not a v1/v2 protocol discriminator; bound it before continuing. */
++ n=le16(h+2);d->startup_id_length=(uint16_t)n;
++ if (h[0] != 0xa5 || h[1] != 0x10 || n < 24 || n > 32)
++  return S3910_UNSUPPORTED;
++ /* Vendor probes optional CRC (2), extra RC (1), final EOM (1).
++  * This first implementation supports only the no-extension wire variant.
++  */
++ if (io->read(io->cookie, b, n+7)) return S3910_IO;
++ for (i = 0; i < n; i++) d->identification[i] = b[i + 2];
++ for (i = 0; i < sizeof(d->startup_extension); i++) d->startup_extension[i] = b[i + n + 3];
++ if (b[0] != 0xa5 || b[1] != 3 || b[n+2] != 0x5a)
++  return S3910_PROTOCOL;
++ for (i = n+3; i < n+7; i++)
++  if (b[i] != 0x5a) return S3910_UNSUPPORTED;
++ if (b[3] != 1) return S3910_NOT_READY; /* application firmware only */
++ d->max_write = (uint16_t)le16(b + 24);
++ if (d->max_write && d->max_write < 6) return S3910_UNSUPPORTED;
++ d->identified = 1;
++ return 0;
++}
++
++static int command(struct s3910 *d, uint8_t cmd, const uint8_t *p, unsigned n)
++{
++ uint8_t b[S3910_MAX_PAYLOAD + 3];
++ unsigned i;
++ int r;
++ if (!d->identified) return S3910_NOT_READY;
++ if (n > S3910_MAX_PAYLOAD || (d->max_write && n + 3 > d->max_write))
++  return S3910_RANGE; /* chunked writes deliberately not supported */
++ b[0] = cmd; b[1] = (uint8_t)n; b[2] = (uint8_t)(n >> 8);
++ for (i = 0; i < n; i++) b[i + 3] = p[i];
++ d->last_command = cmd;
++ d->last_status = 0xff;
++ if (d->io.write(d->io.cookie, b, n + 3)) return S3910_IO;
++ /* Limit reports interleaved with the command response and wall-clock wait. */
++ for (i = 0; i < 1000; i++) {
++  r = d->io.irq_asserted(d->io.cookie);
++  if (r < 0) return S3910_IO;
++  if (!r) { d->io.sleep_ms(d->io.cookie, 1); continue; }
++  r = receive(d);
++  if (r) return r;
++  if (d->code == 0x10) {
++   d->identified = d->ready = 0; d->resets++;
++   s3910_release_all(d);
++   return S3910_RESET;
++  }
++  if (d->code == 1) { d->last_status = 1; return 0; }
++  if (d->code && d->code < 0x10) {
++   d->last_status = d->code;
++   return S3910_UNSUPPORTED;
++  }
++  if (d->code == S3910_REPORT_HBP) d->ignored_hbp++;
++  /* Setup drops all report data until layout readback succeeds. */
++  d->io.sleep_ms(d->io.cookie, 1);
++ }
++ return S3910_TIMEOUT;
++}
++
++int s3910_read_app_info(struct s3910 *d)
++{
++ int r;
++ r = command(d, 0x20, 0, 0); /* GET_APPLICATION_INFO */
++ if (r) return r;
++ if (d->length < 38 || le16(d->payload + 2) != 0) return S3910_NOT_READY;
++ if (le16(d->payload) != 1) return S3910_UNSUPPORTED;
++ d->config_size = (uint16_t)le16(d->payload + 12);
++ d->max_payload = (uint16_t)le16(d->payload + 14);
++ d->max_x = (uint16_t)le16(d->payload + 32);
++ d->max_y = (uint16_t)le16(d->payload + 34);
++ d->max_objects = (uint16_t)le16(d->payload + 36);
++ if (!d->max_x || !d->max_y || !d->max_objects ||
++     d->max_objects > S3910_MAX_OBJECTS ||
++     d->max_payload < 1 + d->max_objects * 6 ||
++     d->config_size < sizeof(touch_config) || d->config_size > S3910_MAX_PAYLOAD)
++  return S3910_UNSUPPORTED;
++ return 0;
++}
++
++int s3910_enable_lbp(struct s3910 *d)
++{
++ uint8_t config[S3910_MAX_PAYLOAD], report, dc[3] = { 0x11, 2, 0 };
++ unsigned i;
++ int r;
++ d->ready = 0;
++ s3910_release_all(d);
++ r = s3910_read_app_info(d);
++ if (r) return r;
++ /* Exact vendor HBP->LBP sequence, then read back dynamic config. */
++ report = S3910_REPORT_HBP;
++ if ((r = command(d, 0x06, &report, 1))) return r;
++ if ((r = command(d, 0x24, dc, sizeof(dc)))) return r;
++ if ((r = command(d, 0x23, dc, 1))) return r;
++ if (d->length != 2 || le16(d->payload) != 2) return S3910_PROTOCOL;
++ report = S3910_REPORT_TOUCH;
++ if ((r = command(d, 0x06, &report, 1))) return r;
++ zero(config, d->config_size);
++ for (i = 0; i < sizeof(touch_config); i++) config[i] = touch_config[i];
++ if ((r = command(d, 0x26, config, d->config_size))) return r;
++ if ((r = command(d, 0x25, 0, 0))) return r;
++ if (d->length < sizeof(touch_config) ||
++     !equal(d->payload, touch_config, sizeof(touch_config))) return S3910_PROTOCOL;
++ if ((r = command(d, 0x05, &report, 1))) return r;
++ d->ready = 1;
++ return 0;
++}
++
++int s3910_touch_payload(struct s3910 *d, const uint8_t *p, size_t n)
++{
++ struct s3910_slot next[S3910_MAX_OBJECTS];
++ unsigned i, count, seen = 0;
++ if (!d->ready) return S3910_NOT_READY;
++ if (!p || n < 1 || !d->max_x || !d->max_y) goto bad;
++ count = p[0];
++ if (count > d->max_objects || count > S3910_MAX_OBJECTS || n > d->max_payload || n != 1 + count * 6)
++  goto bad;
++ zero(next, sizeof(next));
++ /* Validate the WHOLE frame before changing slots or emitting any event. */
++ for (i = 0; i < count; i++) {
++  const uint8_t *q = p + 1 + i * 6;
++  unsigned id = q[0], type = q[1], x = le16(q + 2), y = le16(q + 4);
++  if (id >= d->max_objects || id >= S3910_MAX_OBJECTS || (seen & (1u << id)) ||
++      x > d->max_x || y > d->max_y) goto bad;
++  seen |= 1u << id;
++  /* Palm/hover/stylus are not converted to finger touches. */
++  if (type == 1 || type == 2) {
++   next[id].active = 1; next[id].x = (uint16_t)x; next[id].y = (uint16_t)y;
++  }
++ }
++ for (i = 0; i < S3910_MAX_OBJECTS; i++) {
++  struct s3910_slot *old = &d->slots[i], *now = &next[i];
++  unsigned event = 0, x = now->x, y = now->y;
++  if (now->active) {
++   if (!old->active) event = S3910_DOWN;
++   else if (old->x != now->x || old->y != now->y) event = S3910_MOVE;
++  } else if (old->active) { event = S3910_UP; x = old->x; y = old->y; }
++  if (event) d->io.event(d->io.cookie, event, i,
++   (uint32_t)x * 65535u / d->max_x, (uint32_t)y * 65535u / d->max_y);
++  *old = *now;
++ }
++ d->frames++;
++ return 0;
++bad:
++ d->bad_frames++;
++ return S3910_PROTOCOL;
++}
++
++int s3910_poll(struct s3910 *d)
++{
++ int r;
++ if (!d->ready) return S3910_NOT_READY;
++ r = d->io.irq_asserted(d->io.cookie);
++ if (r < 0) return S3910_IO;
++ if (!r) return 0;
++ r = receive(d);
++ if (r) goto stop;
++ if (d->code == S3910_REPORT_TOUCH) {
++  r = s3910_touch_payload(d, d->payload, d->length);
++  if (r) goto stop;
++ } else if (d->code == S3910_REPORT_IDENTIFY) {
++  d->identified = 0; d->resets++; r = S3910_RESET; goto stop;
++ } else if (d->code == S3910_REPORT_HBP) {
++  d->ignored_hbp++; r = S3910_UNSUPPORTED; goto stop;
++ }
++ return 0;
++stop:
++ d->ready = 0;
++ s3910_release_all(d);
++ return r;
++}
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index 6cb65f6..e0d9fad 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1010,6 +1010,7 @@ bsd_init(void)
+ 		bsd_init_kprintf("calling devfs_kernel_mount\n");
+ 		devfs_kernel_mount(mounthere);
+ 		redwood_input_init();           /* /dev/redwood-touch */
++		redwood_s3910_init();           /* touchscreen=2: the OnePlus 13's S3910 over the loader's GPIO lease */
+ 		redwood_audio_init();           /* /dev/redwood-audio */
+ 		redwood_virtio_blk_init();      /* /dev/rvblk0, a disk image of the host (QEMU) */
+ 		redwood_sparse_init();          /* /dev/rsp0, part of an image too big to hold */
+diff --git a/bsd/sys/redwood_input.h b/bsd/sys/redwood_input.h
+index 56ccf93..b595d22 100644
+--- a/bsd/sys/redwood_input.h
++++ b/bsd/sys/redwood_input.h
+@@ -42,6 +42,7 @@ void redwood_input_init(void);
+ void redwood_virtio_input_init(void);   /* boot-arg virtio_input=1: QEMU's virtio pointer and keyboard */
+ void redwood_goodix_init(void);         /* boot-arg touchscreen=1: the phone's Goodix or FocalTech touch screen */
+ void hakios_dada_touch_init(void);    /* boot-arg dadatouch=1: the Xiaomi 15's Synaptics touch screen */
++void redwood_s3910_init(void);        /* boot-arg touchscreen=2: the OnePlus 13's S3910, over the loader's GPIO lease */
+ void hakios_dada_gpu_init(void);      /* boot-arg dadagpu=N: steps of the Xiaomi 15's Adreno 830 bring-up */
+ void redwood_buttons_init(void);        /* boot-arg buttons=1: the phone's power and volume keys */
+ void redwood_ufs_init(void);           /* ufs=2 to xnuloader: the phone's storage, read only, through the loader (ufs_shared_pa=) */
+diff --git a/bsd/sys/redwood_s3910.h b/bsd/sys/redwood_s3910.h
+new file mode 100644
+index 0000000..226c2d2
+--- /dev/null
++++ b/bsd/sys/redwood_s3910.h
+@@ -0,0 +1,58 @@
++/* SPDX-License-Identifier: BSD-2-Clause
++ * Independently implemented from the public TouchCom interface definitions.
++ * No Linux driver code is included. See REFERENCES.md for protocol sources.
++ */
++#ifndef SM8750_S3910_H
++#define SM8750_S3910_H
++#include <stddef.h>
++#include <stdint.h>
++
++#define S3910_MAX_OBJECTS 10
++#define S3910_MAX_PAYLOAD 1024
++#define S3910_REPORT_TOUCH 0x11
++#define S3910_REPORT_IDENTIFY 0x10
++#define S3910_REPORT_HBP 0x23
++enum s3910_error {
++ S3910_OK = 0, S3910_IO = -1, S3910_PROTOCOL = -2,
++ S3910_UNSUPPORTED = -3, S3910_TIMEOUT = -4, S3910_RANGE = -5,
++ S3910_NOT_READY = -6, S3910_RESET = -7
++};
++enum s3910_event { S3910_DOWN = 1, S3910_MOVE = 2, S3910_UP = 3 };
++
++/* All methods run on ONE worker thread, never in interrupt context.
++ * SPI read clocks 0xff with CS asserted for the entire transfer; write likewise.
++ * Return zero only for an exact-length transfer. irq_asserted returns 0/1 or <0.
++ * The board binding must supply time-bounded I/O and correctly powered hardware.
++ */
++struct s3910_io {
++ void *cookie;
++ int (*read)(void *, uint8_t *, size_t);
++ int (*write)(void *, const uint8_t *, size_t);
++ int (*irq_asserted)(void *);
++ void (*sleep_ms)(void *, unsigned);
++ void (*event)(void *, unsigned, unsigned, uint32_t, uint32_t);
++};
++struct s3910_slot { uint16_t x, y; uint8_t active; };
++struct s3910 {
++ struct s3910_io io;
++ struct s3910_slot slots[S3910_MAX_OBJECTS];
++ uint8_t payload[S3910_MAX_PAYLOAD];
++ uint16_t length, max_write, max_x, max_y, max_objects, config_size, max_payload;
++ uint8_t code, ready, identified, last_command, last_status;
++ uint8_t startup_header[4], identification[32], startup_extension[4];
++ uint16_t startup_id_length;
++ uint32_t frames, bad_frames, resets, ignored_hbp;
++};
++
++/* Read bounded24..32-byte startup identify, detect TouchCom v1 by its wire
++ * marker, reject CRC/extra-RC/v2 framing; identification length does not itself
++ * select the wire protocol. No firmware downloads or flash writes.
++ */
++int s3910_probe(struct s3910 *, const struct s3910_io *);
++int s3910_read_app_info(struct s3910 *); /* GET_APP_INFO only; no report/config changes */
++int s3910_enable_lbp(struct s3910 *);
++int s3910_poll(struct s3910 *);
++void s3910_release_all(struct s3910 *);
++/* Exposed for deterministic decoder tests; requires ready=1 after setup. */
++int s3910_touch_payload(struct s3910 *, const uint8_t *, size_t);
++#endif
