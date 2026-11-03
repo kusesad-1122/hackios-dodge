@@ -1036,6 +1036,37 @@ index 6cb65f6..e0d9fad 100644
  		redwood_audio_init();           /* /dev/redwood-audio */
  		redwood_virtio_blk_init();      /* /dev/rvblk0, a disk image of the host (QEMU) */
  		redwood_sparse_init();          /* /dev/rsp0, part of an image too big to hold */
+diff --git a/bsd/miscfs/ramfs/ramfs.c b/bsd/miscfs/ramfs/ramfs.c
+index ed657fd..52e101a 100644
+--- a/bsd/miscfs/ramfs/ramfs.c
++++ b/bsd/miscfs/ramfs/ramfs.c
+@@ -1460,6 +1460,18 @@ ramfs_mnomap(__unused struct vnop_mnomap_args *ap)
+ 	return 0;
+ }
+ 
++/*
++ * SQLite (and therefore PosterBoard's CoreData stores, v35) opens a database with fcntl/OFD
++ * locks; a filesystem without a lock entry point answers ENOTSUP and the open fails with
++ * SQLITE_CANTOPEN (14). A RAM volume is private to one boot and gone at reset, so there is no
++ * second host to exclude: reporting every lock as granted is the whole contract it needs.
++ */
++static int
++ramfs_advlock(__unused struct vnop_advlock_args *ap)
++{
++	return 0;
++}
++
+ /* Fill pages of the page cache from the file. */
+ static int
+ ramfs_pagein(struct vnop_pagein_args *ap)
+@@ -1788,6 +1800,7 @@ const struct vnodeopv_entry_desc ramfs_vnodeop_entries[] = {
+ 	{ .opve_op = &vnop_pathconf_desc, .opve_impl = (VOPFUNC)ramfs_pathconf },
+ 	{ .opve_op = &vnop_mmap_desc, .opve_impl = (VOPFUNC)ramfs_mmap },
+ 	{ .opve_op = &vnop_mnomap_desc, .opve_impl = (VOPFUNC)ramfs_mnomap },
++	{ .opve_op = &vnop_advlock_desc, .opve_impl = (VOPFUNC)ramfs_advlock },
+ 	{ .opve_op = &vnop_pagein_desc, .opve_impl = (VOPFUNC)ramfs_pagein },
+ 	{ .opve_op = &vnop_pageout_desc, .opve_impl = (VOPFUNC)ramfs_pageout },
+ 	{ .opve_op = &vnop_getxattr_desc, .opve_impl = (VOPFUNC)ramfs_getxattr },
 diff --git a/bsd/sys/redwood_input.h b/bsd/sys/redwood_input.h
 index 56ccf93..b595d22 100644
 --- a/bsd/sys/redwood_input.h
