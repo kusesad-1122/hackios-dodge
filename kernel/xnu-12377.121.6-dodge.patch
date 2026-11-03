@@ -13,6 +13,100 @@ index c99e22e..ea08f3b 100644
  bsd/dev/hakios_dada_gauge.c	standard
  bsd/dev/hakios_dada_amp.c	standard
  bsd/dev/hakios_dada_audio.c	standard
+diff --git a/bsd/dev/hakios_dada_gpu.c b/bsd/dev/hakios_dada_gpu.c
+index 07af7eb..267d9b2 100644
+--- a/bsd/dev/hakios_dada_gpu.c
++++ b/bsd/dev/hakios_dada_gpu.c
+@@ -976,6 +976,60 @@ phase_gmu_start(void)
+ 
+ static uint32_t hfi_seqnum;
+ 
++/* TEMP_PROBE: bounded, opt-in observations of the failing phase-4 exchange. No queue is drained here. */
++static TUNABLE(uint32_t, hfi_trace, "dadagpu_hfi_trace", 0);
++static unsigned hfi_trace_received;
++
++static bool
++hfi_trace_on(void)
++{
++	return hfi_trace != 0 && phase == 4;
++}
++
++static void
++hfi_trace_words(const char *what, unsigned queue, const volatile uint32_t *data,
++    uint32_t start, uint32_t words, uint32_t ring_words)
++{
++	uint32_t shown = words < 192 ? words : 192;
++
++	if (!hfi_trace_on()) {
++		return;
++	}
++	say("TEMP_PROBE hfi %s q%u words=%u shown=%u\n", what, queue, words, shown);
++	for (uint32_t i = 0; i < shown; i += 4) {
++		uint32_t part[4] = { 0 };
++
++		for (uint32_t j = 0; j < 4 && i + j < shown; j++) {
++			part[j] = data[(start + i + j) % ring_words];
++		}
++		say("TEMP_PROBE hfi %s q%u [%03u] %08x %08x %08x %08x\n", what, queue, i,
++		    part[0], part[1], part[2], part[3]);
++	}
++}
++
++static void
++hfi_trace_snapshot(uint32_t id, uint32_t seqnum, bool answered, uint32_t error)
++{
++	if (!hfi_trace_on()) {
++		return;
++	}
++	say("TEMP_PROBE hfi finish id=%u seq=%u answered=%u error=%08x info=%08x mask=%08x init=%08x pwr=%08x\n",
++	    id, seqnum, (unsigned)answered, error, G(G8_GMU_GMU2HOST_INTR_INFO),
++	    G(G8_GMU_GMU2HOST_INTR_MASK), G(G8_GMU_CM3_FW_INIT_RESULT), G(G8_GMU_PWR_CLK_STATUS));
++	if (answered && error == 0) {
++		return;
++	}
++	for (unsigned queue = 0; queue < HFI_QUEUES; queue++) {
++		volatile struct hfi_queue_header *h = hfi_header(queue);
++		uint32_t read = h->read_index, write = h->write_index;
++		uint32_t pending = (write % HFI_QUEUE_WORDS + HFI_QUEUE_WORDS - read % HFI_QUEUE_WORDS) % HFI_QUEUE_WORDS;
++
++		say("TEMP_PROBE hfi snapshot q%u status=%u size=%u read=%u write=%u pending=%u dropped=%u rxreq=%u txreq=%u\n",
++		    queue, h->status, h->size, read, write, pending, h->dropped, h->rx_request, h->tx_request);
++		hfi_trace_words("pending", queue, hfi_data(queue), read % HFI_QUEUE_WORDS, pending, HFI_QUEUE_WORDS);
++	}
++}
++
+ /* everything waiting in a queue of the GMU's; true if the answer to `seqnum` was among it */
+ static bool
+ hfi_receive(unsigned which, uint32_t seqnum, uint32_t *error)
+@@ -987,6 +1041,12 @@ hfi_receive(unsigned which, uint32_t seqnum, uint32_t *error)
+ 	while (h->read_index != h->write_index) {
+ 		uint32_t message[8] = { 0 }, at = h->read_index % HFI_QUEUE_WORDS, words = data[at] >> 8 & 0xff;
+ 
++		if (hfi_trace_on() && hfi_trace_received < 32) {
++			hfi_trace_received++;
++			say("TEMP_PROBE hfi receive q%u expected_seq=%u read=%u write=%u\n", which, seqnum,
++			    h->read_index, h->write_index);
++			hfi_trace_words("receive", which, data, at, words, HFI_QUEUE_WORDS);
++		}
+ 		for (uint32_t i = 0; i < words; i++) {
+ 			if (i < 8) {
+ 				message[i] = data[at];
+@@ -1022,6 +1082,7 @@ hfi_send(const char *what, uint32_t id, uint32_t *message, uint32_t words)
+ 	bool answered = false;
+ 
+ 	message[0] = seqnum << 20 | words << 8 | id;
++	hfi_trace_words("send", 0, message, 0, words, words);
+ 	if (!hfi_quiet) {
+ 		say("%u: to the GMU: %s (message %u, %u words)\n", phase, what, id, words);
+ 	}
+@@ -1041,6 +1102,7 @@ hfi_send(const char *what, uint32_t id, uint32_t *message, uint32_t words)
+ 		}
+ 	}
+ 	hfi_receive(2, ~0u, &error);
++	hfi_trace_snapshot(id, seqnum, answered, error);
+ 	if (!answered || error != 0) {
+ 		say("%u: the GMU %s (%#x) to %s\n", phase, answered ? "says no" : "does not answer", error, what);
+ 		gmu_log_tail();
 diff --git a/bsd/dev/hakios_soc.c b/bsd/dev/hakios_soc.c
 new file mode 100644
 index 0000000..9d846db
