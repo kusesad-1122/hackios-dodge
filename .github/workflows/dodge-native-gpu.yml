@@ -1,0 +1,152 @@
+name: dodge-native-gpu
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dodge-native-gpu-20261103]
+    paths:
+      - .github/workflows/dodge-native-gpu.yml
+      - gpu2/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dodge-native-gpu-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    runs-on: macos-15
+    timeout-minutes: 100
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      GPU_RUST_TOOLCHAIN: nightly-2026-10-28
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify iOS 26 SDK, arm64e, and Metal compiler
+        run: |
+          set -euo pipefail
+          mkdir -p gpu2/out gpu2/build/prerequisites
+          exec > >(tee gpu2/out/prerequisites.log) 2>&1
+          sw_vers
+          uname -m
+          xcodebuild -version
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "GPU_IPHONEOS_SDK=$SDK_VERSION $SDK"
+          test "${SDK_VERSION%%.*}" -ge 26
+          for tool in clang clang++ metal metallib ar strip; do
+            xcrun --sdk iphoneos --find "$tool"
+          done
+          printf 'int probe(void) { return 0; }\n' > gpu2/build/prerequisites/arm64e.c
+          xcrun --sdk iphoneos clang -target arm64e-apple-ios26.0 -isysroot "$SDK" \
+            -c gpu2/build/prerequisites/arm64e.c -o gpu2/build/prerequisites/arm64e.o
+          file gpu2/build/prerequisites/arm64e.o
+          if ! xcrun --sdk iphoneos metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+            xcrun --kill-cache
+            xcrun --sdk iphoneos metal --version
+          fi
+          printf '#include <metal_stdlib>\nusing namespace metal;\nkernel void probe(device uint *p [[buffer(0)]], uint i [[thread_position_in_grid]]) { p[i] = i; }\n' \
+            > gpu2/build/prerequisites/probe.metal
+          xcrun --sdk iphoneos metal -mios-version-min=26.0 -c gpu2/build/prerequisites/probe.metal \
+            -o gpu2/build/prerequisites/probe.air
+          xcrun --sdk iphoneos metallib gpu2/build/prerequisites/probe.air \
+            -o gpu2/build/prerequisites/probe.metallib
+          test -s gpu2/build/prerequisites/probe.metallib
+          echo GPU_APPLE_TOOLCHAIN_READY
+
+      - name: Prepare build tools
+        run: |
+          set -euo pipefail
+          exec > >(tee gpu2/out/tools.log) 2>&1
+          brew install llvm glslang spirv-tools bison flex ninja
+          python3 -m venv gpu2/venv
+          gpu2/venv/bin/python -m pip install 'meson>=1.5,<1.10' mako pyyaml packaging
+          echo "$PWD/gpu2/venv/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup toolchain install "$GPU_RUST_TOOLCHAIN" --profile minimal --component rust-src
+          rustup run "$GPU_RUST_TOOLCHAIN" rustc -vV
+          echo GPU_RUST_TOOLCHAIN_READY
+
+      - name: Restore fixed source bases and exported patches
+        run: |
+          set -euo pipefail
+          python3 -u gpu2/prepare-dodge-sources.py --jobs 3 2>&1 | tee gpu2/out/sources.log
+          cp gpu2/src/dodge-sources.json gpu2/out/dodge-sources.json
+
+      - name: Build Turnip and Vulkan pixel test
+        run: |
+          set -euo pipefail
+          bash gpu2/build_turnip_ios.sh 2>&1 | tee gpu2/out/turnip.log
+
+      - name: Build pointer-authenticated native bridge
+        run: |
+          set -euo pipefail
+          bash gpu2/build_bridge.sh ios 2>&1 | tee gpu2/out/bridge.log
+
+      - name: Build isolated Metal plugin and pixel test
+        run: |
+          set -euo pipefail
+          bash gpu2/build_plugin.sh 2>&1 | tee gpu2/out/plugin.log
+
+      - name: Verify native outputs and capture provenance
+        run: |
+          set -euo pipefail
+          python3 gpu2/prepare-dodge-sources.py --verify-only
+          codesign --verify --strict gpu2/out/turnip/libvulkan_freedreno.dylib
+          codesign --verify --strict gpu2/out/turnip/vktest
+          codesign --verify --strict gpu2/out/plugin/RedwoodMetal.bundle/RedwoodMetal
+          codesign --verify --strict gpu2/out/plugin/RedwoodMetal.bundle/libvulkan_freedreno.dylib
+          codesign --verify --strict gpu2/out/plugin/mtltest
+          cp gpu2/build/bridge/Cargo.lock gpu2/out/Cargo.lock
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, struct, subprocess
+          root = pathlib.Path('gpu2/out')
+          outputs = ['turnip/libvulkan_freedreno.dylib', 'turnip/vktest',
+                     'plugin/RedwoodMetal.bundle/RedwoodMetal',
+                     'plugin/RedwoodMetal.bundle/libvulkan_freedreno.dylib', 'plugin/mtltest']
+          binaries = []
+          for name in outputs:
+              path = root / name
+              raw = path.read_bytes()
+              magic, cpu, subtype = struct.unpack_from('<III', raw)
+              assert magic == 0xfeedfacf and cpu == 0x100000c and subtype & 0xffffff == 2, name
+              binaries.append(dict(path=name, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
+                                   architecture='arm64e', cpu_subtype=hex(subtype)))
+          clients = (root / 'plugin/NativeAdrenoMetal.clients').read_text().split()
+          assert clients == ['mtltest'], clients
+          files = []
+          for path in sorted(root.rglob('*')):
+              if path.is_file() and path.suffix not in ('.log',):
+                  files.append(dict(path=path.relative_to(root).as_posix(), bytes=path.stat().st_size,
+                                    sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+          def output(*args):
+              return subprocess.check_output(args, text=True).strip()
+          report = dict(format=1, workflow_commit=os.environ['GITHUB_SHA'],
+                        run_id=os.environ['GITHUB_RUN_ID'], run_attempt=os.environ['GITHUB_RUN_ATTEMPT'],
+                        xcode=output('xcodebuild', '-version'),
+                        sdk=output('xcrun', '--sdk', 'iphoneos', '--show-sdk-version'),
+                        rust=output('rustup', 'run', os.environ['GPU_RUST_TOOLCHAIN'], 'rustc', '-vV'),
+                        sources=json.loads((root / 'dodge-sources.json').read_text()), binaries=binaries,
+                        files=files, metal_clients=clients, device_tested=False, gpu_acceleration_verified=False)
+          (root / 'dodge-native-build.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(dict(binaries=binaries, metal_clients=clients), indent=2))
+          PY
+          echo GPU_NATIVE_OUTPUTS_VERIFIED
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dodge-native-gpu-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            gpu2/out
+            gpu2/build/turnip-ios/tu/meson-logs/meson-log.txt
+            gpu2/build/turnip-ios/tu/meson-info
+          if-no-files-found: error
+          retention-days: 14
