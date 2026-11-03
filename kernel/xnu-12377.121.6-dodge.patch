@@ -13,100 +13,6 @@ index c99e22e..ea08f3b 100644
  bsd/dev/hakios_dada_gauge.c	standard
  bsd/dev/hakios_dada_amp.c	standard
  bsd/dev/hakios_dada_audio.c	standard
-diff --git a/bsd/dev/hakios_dada_gpu.c b/bsd/dev/hakios_dada_gpu.c
-index 07af7eb..267d9b2 100644
---- a/bsd/dev/hakios_dada_gpu.c
-+++ b/bsd/dev/hakios_dada_gpu.c
-@@ -976,6 +976,60 @@ phase_gmu_start(void)
- 
- static uint32_t hfi_seqnum;
- 
-+/* TEMP_PROBE: bounded, opt-in observations of the failing phase-4 exchange. No queue is drained here. */
-+static TUNABLE(uint32_t, hfi_trace, "dadagpu_hfi_trace", 0);
-+static unsigned hfi_trace_received;
-+
-+static bool
-+hfi_trace_on(void)
-+{
-+	return hfi_trace != 0 && phase == 4;
-+}
-+
-+static void
-+hfi_trace_words(const char *what, unsigned queue, const volatile uint32_t *data,
-+    uint32_t start, uint32_t words, uint32_t ring_words)
-+{
-+	uint32_t shown = words < 192 ? words : 192;
-+
-+	if (!hfi_trace_on()) {
-+		return;
-+	}
-+	say("TEMP_PROBE hfi %s q%u words=%u shown=%u\n", what, queue, words, shown);
-+	for (uint32_t i = 0; i < shown; i += 4) {
-+		uint32_t part[4] = { 0 };
-+
-+		for (uint32_t j = 0; j < 4 && i + j < shown; j++) {
-+			part[j] = data[(start + i + j) % ring_words];
-+		}
-+		say("TEMP_PROBE hfi %s q%u [%03u] %08x %08x %08x %08x\n", what, queue, i,
-+		    part[0], part[1], part[2], part[3]);
-+	}
-+}
-+
-+static void
-+hfi_trace_snapshot(uint32_t id, uint32_t seqnum, bool answered, uint32_t error)
-+{
-+	if (!hfi_trace_on()) {
-+		return;
-+	}
-+	say("TEMP_PROBE hfi finish id=%u seq=%u answered=%u error=%08x info=%08x mask=%08x init=%08x pwr=%08x\n",
-+	    id, seqnum, (unsigned)answered, error, G(G8_GMU_GMU2HOST_INTR_INFO),
-+	    G(G8_GMU_GMU2HOST_INTR_MASK), G(G8_GMU_CM3_FW_INIT_RESULT), G(G8_GMU_PWR_CLK_STATUS));
-+	if (answered && error == 0) {
-+		return;
-+	}
-+	for (unsigned queue = 0; queue < HFI_QUEUES; queue++) {
-+		volatile struct hfi_queue_header *h = hfi_header(queue);
-+		uint32_t read = h->read_index, write = h->write_index;
-+		uint32_t pending = (write % HFI_QUEUE_WORDS + HFI_QUEUE_WORDS - read % HFI_QUEUE_WORDS) % HFI_QUEUE_WORDS;
-+
-+		say("TEMP_PROBE hfi snapshot q%u status=%u size=%u read=%u write=%u pending=%u dropped=%u rxreq=%u txreq=%u\n",
-+		    queue, h->status, h->size, read, write, pending, h->dropped, h->rx_request, h->tx_request);
-+		hfi_trace_words("pending", queue, hfi_data(queue), read % HFI_QUEUE_WORDS, pending, HFI_QUEUE_WORDS);
-+	}
-+}
-+
- /* everything waiting in a queue of the GMU's; true if the answer to `seqnum` was among it */
- static bool
- hfi_receive(unsigned which, uint32_t seqnum, uint32_t *error)
-@@ -987,6 +1041,12 @@ hfi_receive(unsigned which, uint32_t seqnum, uint32_t *error)
- 	while (h->read_index != h->write_index) {
- 		uint32_t message[8] = { 0 }, at = h->read_index % HFI_QUEUE_WORDS, words = data[at] >> 8 & 0xff;
- 
-+		if (hfi_trace_on() && hfi_trace_received < 32) {
-+			hfi_trace_received++;
-+			say("TEMP_PROBE hfi receive q%u expected_seq=%u read=%u write=%u\n", which, seqnum,
-+			    h->read_index, h->write_index);
-+			hfi_trace_words("receive", which, data, at, words, HFI_QUEUE_WORDS);
-+		}
- 		for (uint32_t i = 0; i < words; i++) {
- 			if (i < 8) {
- 				message[i] = data[at];
-@@ -1022,6 +1082,7 @@ hfi_send(const char *what, uint32_t id, uint32_t *message, uint32_t words)
- 	bool answered = false;
- 
- 	message[0] = seqnum << 20 | words << 8 | id;
-+	hfi_trace_words("send", 0, message, 0, words, words);
- 	if (!hfi_quiet) {
- 		say("%u: to the GMU: %s (message %u, %u words)\n", phase, what, id, words);
- 	}
-@@ -1041,6 +1102,7 @@ hfi_send(const char *what, uint32_t id, uint32_t *message, uint32_t words)
- 		}
- 	}
- 	hfi_receive(2, ~0u, &error);
-+	hfi_trace_snapshot(id, seqnum, answered, error);
- 	if (!answered || error != 0) {
- 		say("%u: the GMU %s (%#x) to %s\n", phase, answered ? "says no" : "does not answer", error, what);
- 		gmu_log_tail();
 diff --git a/bsd/dev/hakios_soc.c b/bsd/dev/hakios_soc.c
 new file mode 100644
 index 0000000..9d846db
@@ -1286,41 +1192,6 @@ index 0000000..226c2d2
 +/* Exposed for deterministic decoder tests; requires ready=1 after setup. */
 +int s3910_touch_payload(struct s3910 *, const uint8_t *, size_t);
 +#endif
-diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-index 78a3b14..3a5eff9 100644
---- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-+++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-@@ -27,6 +27,7 @@
- #include <kern/thread_call.h>
- #include <kern/thread.h>
- #include <kern/clock.h>
-+#include <machine/machine_routines.h>
- #include <pexpert/pexpert.h>
- #include <sys/systm.h>
- #include <sys/proc.h>
-@@ -522,7 +523,22 @@ IOMobileFramebuffer::start(IOService * provider)
- 	}
- 	thread_set_thread_name(thread, "frames to the panel");
- 	thread_deallocate(thread);
-+	/*
-+	 * No more drawers than there are processors to run them. drawLayer() hands the rows to the helpers and
-+	 * then waits for them, so a helper beyond the processor count buys no parallelism: it costs a scheduling
-+	 * round trip per frame. (One 3 November run on a single processor with fb_threads=3 reported 26 ms a
-+	 * frame in here, while an fb_threads=1 run reported 9 to 10. Those were different runs and are not a
-+	 * controlled comparison -- the point is only that extra drawers cannot help when there is nothing to
-+	 * run them on, so with one processor the whole frame is drawn inline.)
-+	 */
- 	fThreads = gThreads >= 1 && gThreads <= 8 ? gThreads : 1;
-+	{
-+		unsigned cpus = ml_get_cpu_count();
-+
-+		if (cpus >= 1 && fThreads > cpus) {
-+			fThreads = cpus;
-+		}
-+	}
- 	fHelperLock = IOLockAlloc();
- 	for (unsigned i = 0; i + 1 < fThreads; i++) {
- 		if (kernel_thread_start(&IOMobileFramebuffer::helperMain, this, &thread) != KERN_SUCCESS) {
 diff --git a/libkern/libkern/c++/OSData.h b/libkern/libkern/c++/OSData.h
 index f7108f6..c114488 100644
 --- a/libkern/libkern/c++/OSData.h
@@ -1337,3 +1208,80 @@ index f7108f6..c114488 100644
  		return 0; // C++11 does not support void-returning constexpr functions
  	}
  #else
+diff --git a/osfmk/vm/vm_shared_region.c b/osfmk/vm/vm_shared_region.c
+index b13a691..a66acc4 100644
+--- a/osfmk/vm/vm_shared_region.c
++++ b/osfmk/vm/vm_shared_region.c
+@@ -103,6 +103,14 @@ int shared_region_persistence = 0;      /* no by default */
+ /* delay in seconds before reclaiming an unused shared region */
+ TUNABLE_WRITEABLE(int, shared_region_destroy_delay, "vm_shared_region_destroy_delay", 120);
+ 
++/*
++ * hakios: boot-arg dyldtrace=1 -- one line each time a task's shared region is created or entered,
++ * and each time a slid mapping is installed into it.  A task that runs the dyld shared cache
++ * without ever taking this path is running it from a bare mmap: its authenticated pointers were
++ * never rewritten by the pager, and the first autia/autda on one of them faults (ESR EC 0x1c).
++ */
++TUNABLE(bool, hakios_dyld_trace, "dyldtrace", false);
++
+ #if DEVELOPMENT || DEBUG
+ #define PANIC_ON_DYLD_ISSUE_DEFAULT 0
+ #else /* DEVELOPMENT || DEBUG */
+@@ -2498,6 +2506,11 @@ vm_shared_region_enter(
+ 	}
+ 
+ 	kr = vm_shared_region_insert_placeholder(map, shared_region);
++	if (hakios_dyld_trace) {
++		printf("hakios: shared_region enter map=%p cpu=%d/%d reslide=%d base=0x%llx kr=0x%x\n",
++		    (void *)VM_KERNEL_ADDRPERM(map), cpu, cpu_subtype, reslide,
++		    (uint64_t)shared_region->sr_base_address, kr);
++	}
+ 
+ 	if (kr == KERN_SUCCESS) {
+ 		/* let the task use that shared region */
+@@ -2740,6 +2753,11 @@ vm_shared_region_slide_mapping(
+ 		kr = KERN_RESOURCE_SHORTAGE;
+ 		goto done;
+ 	}
++	if (hakios_dyld_trace) {
++		printf("hakios: slide_mapping slid=0x%llx size=0x%llx prot=%d\n",
++		    (uint64_t)si->si_slid_address, (uint64_t)(si->si_end - si->si_start),
++		    (int)prot);
++	}
+ 
+ #if CONFIG_SECLUDED_MEMORY
+ 	/*
+diff --git a/osfmk/vm/vm_shared_region_pager.c b/osfmk/vm/vm_shared_region_pager.c
+index 4236ee3..368ab46 100644
+--- a/osfmk/vm/vm_shared_region_pager.c
++++ b/osfmk/vm/vm_shared_region_pager.c
+@@ -480,6 +480,9 @@ shared_region_pager_data_initialize(
+  * Handles page-in requests from VM.
+  */
+ int shared_region_pager_data_request_debug = 0;
++/* hakios: boot-arg dyldtrace=1 -- one line per page-in, with the key the slide used. */
++extern bool hakios_dyld_trace;
++static unsigned hakios_dyld_trace_pages;
+ kern_return_t
+ shared_region_pager_data_request(
+ 	memory_object_t         mem_obj,
+@@ -741,6 +744,19 @@ retry_src_fault:
+ 			    0
+ #endif /* __has_feature(ptrauth_calls) */
+ 			    );
++			if (hakios_dyld_trace && hakios_dyld_trace_pages < 12) {
++				hakios_dyld_trace_pages++;
++				printf("hakios: cache_page task=%p off=0x%llx ptrauth=%d jop=0x%llx kr=0x%x "
++				    "word=%016llx\n", (void *)VM_KERNEL_ADDRPERM(current_task()),
++				    (uint64_t)(pager->srp_backing_offset + offset + cur_offset),
++#if __has_feature(ptrauth_calls)
++				    pager->srp_slide_info->si_ptrauth,
++				    (uint64_t)pager->srp_jop_key,
++#else
++				    0, (uint64_t)0,
++#endif
++				    kr, *(uint64_t *)(dst_vaddr + offset_in_page));
++			}
+ 			if (shared_region_pager_data_request_debug) {
+ 				printf("shared_region_data_request"
+ 				    "(%p,0x%llx+0x%llx+0x%04llx): 0x%llx "
