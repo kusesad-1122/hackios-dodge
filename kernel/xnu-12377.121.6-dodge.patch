@@ -441,10 +441,10 @@ index f969cbd..fc6d969 100644
  	PE_parse_boot_argn("touch_flip", &flip, sizeof(flip));
 diff --git a/bsd/dev/redwood_s3910.c b/bsd/dev/redwood_s3910.c
 new file mode 100644
-index 0000000..8e680f8
+index 0000000..de0280b
 --- /dev/null
 +++ b/bsd/dev/redwood_s3910.c
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,153 @@
 +/* SPDX-License-Identifier: BSD-2-Clause
 + * Dedicated OnePlus 13 driver; Goodix/FocalTech retain touchscreen=1.
 + * Select this driver using touchscreen=2. Only the worker may touch the bus.
@@ -488,10 +488,13 @@ index 0000000..8e680f8
 +{
 + struct s3910_io io = { 0 };
 + int error, poll_us = 4000, stage = 1;
++ uint32_t latency = 0, looks = 0, reports = 0;
++ uint64_t began = 0, reading = 0;
 + (void)parameter; (void)result;
 + PE_parse_boot_argn("touch_poll_us", &poll_us, sizeof(poll_us));
 + if (poll_us < 1000 || poll_us > 20000) poll_us = 4000;
 + PE_parse_boot_argn("touch_steps", &stage, sizeof(stage));
++ PE_parse_boot_argn("touch_lat", &latency, sizeof(latency));
 + if (stage < 1 || stage > 4) {
 +  printf("s3910: touch_steps must be 1..4; no hardware access\n");
 +  goto done;
@@ -539,6 +542,9 @@ index 0000000..8e680f8
 +  controller.max_x, controller.max_y, controller.max_objects, poll_us);
 + if (stage == 3) { printf("s3910: stage3 LBP/readback passed; polling not started\n"); goto done; }
 + for (;;) {
++  uint64_t looked = mach_absolute_time();
++  uint32_t frames_before = controller.frames;
++
 +  error = s3910_poll(&controller);
 +  if (error) {
 +   printf("s3910: stopped (%d), code=%#x frames=%u bad=%u resets=%u hbp=%u\n",
@@ -546,6 +552,32 @@ index 0000000..8e680f8
 +    controller.resets, controller.ignored_hbp);
 +   break;
 +  }
++  looks++;
++  if (controller.frames != frames_before) {
++   /* touch_lat=1: how long reading one report takes, and how long the worker takes to come back
++    * to the interrupt line.
++    *
++    * There is no absolute threshold here: the bit clock alone is 5us a half-cycle, so a report is
++    * ~80us of pure delay per byte plus the 4-byte header, and one report legitimately costs about
++    * a millisecond in us even when every wait is spun for. What the two numbers separate is the
++    * cost ABOVE that floor -- with delay_for_interval() each 5us wait is a thread_block() and a
++    * timer wakeup, so blocking multiplies the total instead of adding to it. Read "us a loop"
++    * against the poll interval (touch_poll_us, 4000 by default): a loop time far past it means the
++    * half-cycles are still sleeping, and only then is a report's own time worth comparing. */
++   uint64_t took;
++
++   reports++;
++   absolutetime_to_nanoseconds(mach_absolute_time() - looked, &took);
++   reading += took;
++   if (latency && reports % 60 == 0) {
++    uint64_t ns;
++    absolutetime_to_nanoseconds(mach_absolute_time() - began, &ns);
++    printf("s3910: so far %u reports in %u looks, %llu us a report, %llu us a loop, IRQ every %dus\n",
++     reports, looks, (unsigned long long)(reading / reports / NSEC_PER_USEC),
++     looks ? (unsigned long long)(ns / 1000 / looks) : 0ull, poll_us);
++   }
++  }
++  if (began == 0) began = mach_absolute_time();
 +  delay_for_interval((uint32_t)poll_us, NSEC_PER_USEC);
 + }
 +done:
@@ -568,10 +600,10 @@ index 0000000..8e680f8
 +}
 diff --git a/bsd/dev/redwood_s3910_board.c b/bsd/dev/redwood_s3910_board.c
 new file mode 100644
-index 0000000..742ba9e
+index 0000000..87bba08
 --- /dev/null
 +++ b/bsd/dev/redwood_s3910_board.c
-@@ -0,0 +1,197 @@
+@@ -0,0 +1,214 @@
 +/* SPDX-License-Identifier: BSD-2-Clause-Patent
 + * Mode-0 loop adapted from tycykp/UniXNU-OnePlus-Ace5 giulia_touch_gpio.h,
 + * commit18f51ec652501c62e19dd4f1035dc51daa2a3361, and the HackiOS GPIO SPI
@@ -713,10 +745,27 @@ index 0000000..742ba9e
 + *(volatile uint32_t *)(gpio_bank+off)=v;
 + __asm__ volatile("dsb sy" ::: "memory");return 0;
 +}
++/* The SPI half-cycle is a hardware clock, so it must be spun for, not slept through.
++ * delay_for_interval() blocks for every interval on this port: ml_delay_should_spin() is false because
++ * GenericARMCPU::start() registers each processor with a zeroed ml_processor_info_t, leaving
++ * powergate_latency (and so cpu_idle_latency) 0, which takes the "early boot, latency is unknown" branch
++ * of osfmk/arm64/machine_routines.c. A blocked 5us wait costs a thread_block() and a timer wakeup -- some
++ * 200 of them for one touch report, which is where the reported input lag came from. redwood_camera.c spins
++ * for its microsecond bit clocks the same way (its half_bit()).
++ */
++static void spin_us(uint32_t us)
++{
++ uint64_t until;
++
++ nanoseconds_to_absolutetime((uint64_t)us * NSEC_PER_USEC, &until);
++ until += mach_absolute_time();
++ while (mach_absolute_time() < until) {
++ }
++}
 +static int gpio_delay(void *cookie,unsigned us)
 +{
 + (void)cookie;if(us>1000000)return -5;
-+ delay_for_interval(us,NSEC_PER_USEC);return 0;
++ spin_us(us);return 0;
 +}
 +static int gpio_bus_read(void *cookie,uint8_t *p,size_t n)
 +{return op13_bitbang_transfer(cookie,0,p,n);}
@@ -1143,6 +1192,41 @@ index 0000000..226c2d2
 +/* Exposed for deterministic decoder tests; requires ready=1 after setup. */
 +int s3910_touch_payload(struct s3910 *, const uint8_t *, size_t);
 +#endif
+diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
+index 78a3b14..3a5eff9 100644
+--- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
++++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
+@@ -27,6 +27,7 @@
+ #include <kern/thread_call.h>
+ #include <kern/thread.h>
+ #include <kern/clock.h>
++#include <machine/machine_routines.h>
+ #include <pexpert/pexpert.h>
+ #include <sys/systm.h>
+ #include <sys/proc.h>
+@@ -522,7 +523,22 @@ IOMobileFramebuffer::start(IOService * provider)
+ 	}
+ 	thread_set_thread_name(thread, "frames to the panel");
+ 	thread_deallocate(thread);
++	/*
++	 * No more drawers than there are processors to run them. drawLayer() hands the rows to the helpers and
++	 * then waits for them, so a helper beyond the processor count buys no parallelism: it costs a scheduling
++	 * round trip per frame. (One 3 November run on a single processor with fb_threads=3 reported 26 ms a
++	 * frame in here, while an fb_threads=1 run reported 9 to 10. Those were different runs and are not a
++	 * controlled comparison -- the point is only that extra drawers cannot help when there is nothing to
++	 * run them on, so with one processor the whole frame is drawn inline.)
++	 */
+ 	fThreads = gThreads >= 1 && gThreads <= 8 ? gThreads : 1;
++	{
++		unsigned cpus = ml_get_cpu_count();
++
++		if (cpus >= 1 && fThreads > cpus) {
++			fThreads = cpus;
++		}
++	}
+ 	fHelperLock = IOLockAlloc();
+ 	for (unsigned i = 0; i + 1 < fThreads; i++) {
+ 		if (kernel_thread_start(&IOMobileFramebuffer::helperMain, this, &thread) != KERN_SUCCESS) {
 diff --git a/libkern/libkern/c++/OSData.h b/libkern/libkern/c++/OSData.h
 index f7108f6..c114488 100644
 --- a/libkern/libkern/c++/OSData.h
