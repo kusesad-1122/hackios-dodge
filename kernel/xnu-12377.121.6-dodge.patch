@@ -1415,7 +1415,7 @@ diff --git a/osfmk/vm/vm_shared_region_pager.c b/osfmk/vm/vm_shared_region_pager
 diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 --- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 +++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-@@ -1907,11 +1907,36 @@
+@@ -1907,11 +1907,34 @@
  	gAcceleratorTakesProperties = PE_parse_boot_argn("metal", &metal, sizeof(metal)) && metal != 0;
  	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
  		accelerator->setName("sgx");
@@ -1429,15 +1429,13 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
 +		 * from the bring-up path: the order is fixed, nothing in user space has to run first.
 +		 */
 +		if (gAcceleratorTakesProperties) {
-+			OSString * plugin = OSString::withCString("RedwoodMetal");
-+			OSString * class_name = OSString::withCString("NativeAdrenoMetalDevice");
++			OSSharedPtr<OSString> plugin = OSString::withCString("RedwoodMetal");
++			OSSharedPtr<OSString> class_name = OSString::withCString("NativeAdrenoMetalDevice");
 +
-+			if (plugin != NULL && class_name != NULL) {
-+				accelerator->setProperty(kAcceleratorPluginNameKey, plugin);
-+				accelerator->setProperty(kAcceleratorPluginClassNameKey, class_name);
++			if (plugin && class_name) {
++				accelerator->setProperty(kAcceleratorPluginNameKey, plugin.get());
++				accelerator->setProperty(kAcceleratorPluginClassNameKey, class_name.get());
 +			}
-+			OSSafeReleaseNULL(plugin);
-+			OSSafeReleaseNULL(class_name);
 +		}
  		accelerator->registerService();
 -		/* the first line to look for in the log of such a boot: the gate is open, nothing is set yet */
