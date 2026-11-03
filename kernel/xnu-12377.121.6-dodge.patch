@@ -1412,3 +1412,46 @@ diff --git a/osfmk/vm/vm_shared_region_pager.c b/osfmk/vm/vm_shared_region_pager
  			if (shared_region_pager_data_request_debug) {
  				printf("shared_region_data_request"
  				    "(%p,0x%llx+0x%llx+0x%04llx): 0x%llx "
+diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
+--- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
++++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
+@@ -1907,11 +1907,36 @@
+ 	gAcceleratorTakesProperties = PE_parse_boot_argn("metal", &metal, sizeof(metal)) && metal != 0;
+ 	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
+ 		accelerator->setName("sgx");
++		/*
++		 * hakios: with metal=1 publish both properties here, at registration, instead of waiting
++		 * for a user process to set them. Metal's discovery reads them off this service and loads
++		 * "/System/Library/Extensions/<MetalPluginName>.bundle"; a process that asked for them
++		 * through IORegistryEntrySetCFProperties had to build a CFDictionary first, and on this
++		 * port the earliest probe (PID1's child, before any shared region is slid) faults inside
++		 * CoreFoundation before it gets that far. Publishing them here removes that dependency
++		 * from the bring-up path: the order is fixed, nothing in user space has to run first.
++		 */
++		if (gAcceleratorTakesProperties) {
++			OSString * plugin = OSString::withCString("RedwoodMetal");
++			OSString * class_name = OSString::withCString("NativeAdrenoMetalDevice");
++
++			if (plugin != NULL && class_name != NULL) {
++				accelerator->setProperty(kAcceleratorPluginNameKey, plugin);
++				accelerator->setProperty(kAcceleratorPluginClassNameKey, class_name);
++			}
++			OSSafeReleaseNULL(plugin);
++			OSSafeReleaseNULL(class_name);
++		}
+ 		accelerator->registerService();
+-		/* the first line to look for in the log of such a boot: the gate is open, nothing is set yet */
++		/*
++		 * The one line to look for in the log of such a boot. It says which of the two states the
++		 * service is in: published with both keys (the kernel-side path above ran), or waiting for
++		 * user space to set them.
++		 */
+ 		if (gAcceleratorTakesProperties) {
+-			IOLog("IOAcceleratorES: metal=%u: this service takes " kAcceleratorPluginNameKey
+-			    " and " kAcceleratorPluginClassNameKey " from user space\n", metal);
++			OSObject * published = accelerator->getProperty(kAcceleratorPluginNameKey);
++			IOLog("IOAcceleratorES: metal=%u: " kAcceleratorPluginNameKey " %s\n", metal,
++			    published != NULL ? "published by the kernel" : "still to be set from user space");
+ 		}
+ 	}
+ 	OSSafeReleaseNULL(accelerator);
