@@ -66,7 +66,7 @@ assert source.count(old) == 1
 source = source.replace(old, '\tif (!getenv("TU_DEBUG")) pickTuDebug();')
 pathlib.Path(sys.argv[2]).write_text(source)
 PY
-xcrun clang "${BASE[@]}" -fobjc-arc -Wall -I "$B/gen" "$B/mtltest.m" \
+xcrun clang "${BASE[@]}" -fobjc-arc -Wall -I "$B/gen" -I "$DAL/tools/metal" "$B/mtltest.m" \
 	-framework Foundation -framework Metal -framework IOSurface -o "$OUT/mtltest"
 codesign -s - -f "$OUT/mtltest"
 otool -L "$BUNDLE/RedwoodMetal" | head -12
