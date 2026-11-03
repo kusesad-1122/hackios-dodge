@@ -56,7 +56,17 @@ codesign -s - -f "$BUNDLE/libvulkan_freedreno.dylib"
 xcrun -sdk iphoneos metal -mios-version-min=26.0 -c "$DAL/tools/metal/mtltest.metal" -o "$B/mtltest.air"
 xcrun -sdk iphoneos metallib "$B/mtltest.air" -o "$B/mtltest.metallib"
 (cd "$B" && xxd -i mtltest.metallib > gen/mtltest_metallib.h)
-xcrun clang "${BASE[@]}" -fobjc-arc -Wall -I "$B/gen" "$DAL/tools/metal/mtltest.m" \
+# Preserve an explicit conservative mode from the isolated supervisor; upstream
+# rotates through GMEM experiments when launched repeatedly without that setting.
+python3 - "$DAL/tools/metal/mtltest.m" "$B/mtltest.m" <<'PY'
+import pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+old = '\tpickTuDebug();'
+assert source.count(old) == 1
+source = source.replace(old, '\tif (!getenv("TU_DEBUG")) pickTuDebug();')
+pathlib.Path(sys.argv[2]).write_text(source)
+PY
+xcrun clang "${BASE[@]}" -fobjc-arc -Wall -I "$B/gen" "$B/mtltest.m" \
 	-framework Foundation -framework Metal -framework IOSurface -o "$OUT/mtltest"
 codesign -s - -f "$OUT/mtltest"
 otool -L "$BUNDLE/RedwoodMetal" | head -12
