@@ -1209,7 +1209,7 @@ index f7108f6..c114488 100644
  	}
  #else
 diff --git a/osfmk/vm/vm_shared_region.c b/osfmk/vm/vm_shared_region.c
-index b13a691..acd55c8 100644
+index b13a691..a66acc4 100644
 --- a/osfmk/vm/vm_shared_region.c
 +++ b/osfmk/vm/vm_shared_region.c
 @@ -103,6 +103,14 @@ int shared_region_persistence = 0;      /* no by default */
@@ -1244,9 +1244,9 @@ index b13a691..acd55c8 100644
  		goto done;
  	}
 +	if (hakios_dyld_trace) {
-+		printf("hakios: slide_mapping slid=0x%llx size=0x%llx ptrauth=%d jop=0x%llx\n",
++		printf("hakios: slide_mapping slid=0x%llx size=0x%llx prot=%d\n",
 +		    (uint64_t)si->si_slid_address, (uint64_t)(si->si_end - si->si_start),
-+		    si->si_ptrauth, (uint64_t)sr_pager->srp_jop_key);
++		    (int)prot);
 +	}
  
  #if CONFIG_SECLUDED_MEMORY
