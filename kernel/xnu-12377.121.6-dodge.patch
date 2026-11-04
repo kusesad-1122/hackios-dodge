@@ -1443,7 +1443,42 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  };
  
  /* The swap request (IOMobileFramebufferSwapEnd): 0x46c bytes, of which we read these. */
-@@ -1696,6 +1717,53 @@
+@@ -1102,6 +1123,34 @@
+ 		IOLog("MiniIOMobileFramebuffer: %u frames shown from the display's buffers, %llu us a copy (surface %u, %u bytes a "
+ 		    "row)\n", fScanShown, nanos / fScanShown / NSEC_PER_USEC, s->sid, s->info.bytesPerRow);
+ 	}
++	/*
++	 * What the panel actually holds, sampled rather than assumed: the first frames of a boot say
++	 * whether the screen is black because nothing was drawn or because what was drawn never got
++	 * here.  Every 600th frame keeps the log to one line a few seconds.
++	 */
++	if (fScanShown == 1 || fScanShown % 600 == 0) {
++		const uint32_t * pixels = (const uint32_t *) buffer;
++		uint32_t samples = 0, nonBlack = 0, distinct = 0, last = 0;
++		uint32_t stride = (bytes / 4) / 4096;
++
++		if (stride == 0) {
++			stride = 1;
++		}
++		for (uint32_t i = 0; i < bytes / 4; i += stride) {
++			uint32_t p = pixels[i];
++
++			samples++;
++			if ((p & 0x00FFFFFF) != 0) {
++				nonBlack++;
++			}
++			if (p != last) {
++				distinct++;
++				last = p;
++			}
++		}
++		IOLog("MiniIOMobileFramebuffer: panel after %u frames: %u of %u samples not black, %u changes\n",
++		    fScanShown, nonBlack, samples, distinct);
++	}
+ 	return true;
+ }
+ 
+@@ -1696,6 +1745,53 @@
  		}
  		return kIOReturnSuccess;
  
@@ -1497,7 +1532,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	case kFBMethodGetBlock:                         /* in: which block; out: its bytes */
  		if (args->structureOutput == NULL) {
  			return kIOReturnBadArgument;
-@@ -1907,11 +1975,40 @@
+@@ -1907,11 +2003,40 @@
  	gAcceleratorTakesProperties = PE_parse_boot_argn("metal", &metal, sizeof(metal)) && metal != 0;
  	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
  		accelerator->setName("sgx");
