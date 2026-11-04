@@ -1577,7 +1577,38 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	return true;
  }
  
-@@ -1696,6 +1809,53 @@
+@@ -1115,6 +1228,15 @@
+ 	MiniIOSurface * recorded = NULL;
+ 	bool report;
+ 
++	{
++		static unsigned entered;
++		if (entered++ < 4) {
++			IOLog("MiniIOMobileFramebuffer: show: surfaces %d %d %d %d, layers set 0x%x, display %ux%u\n",
++			    surfaces[0] != NULL, surfaces[1] != NULL, surfaces[2] != NULL, surfaces[3] != NULL,
++			    set, fWidth, fHeight);
++		}
++	}
++
+ 	/*
+ 	 * dada: a swap can come before the GPU work that draws its surface has reached the kernel (the render server swaps once its
+ 	 * command buffer is scheduled, and the runtime or Turnip may hand it over later): the surface's last submission is then the one
+@@ -1285,6 +1407,14 @@
+ 			if (layer == 0) {
+ 				recorded = s;   /* (recorded once the frame is in the panel's memory: see below) */
+ 			}
++		} else {
++			static unsigned said;
++			if (said++ < 4) {
++				IOLog("MiniIOMobileFramebuffer: layer %u surface %u not drawn: %u bytes a pixel, %u planes, %ux%u '%c%c%c%c'\n",
++				    layer, s->sid, s->info.bytesPerElement, s->info.planeCount, s->info.width, s->info.height,
++				    (int) (s->info.pixelFormat >> 24 & 0xff), (int) (s->info.pixelFormat >> 16 & 0xff),
++				    (int) (s->info.pixelFormat >> 8 & 0xff), (int) (s->info.pixelFormat & 0xff));
++			}
+ 		}
+ 	}
+ 	drawn = mach_absolute_time();
+@@ -1696,6 +1826,53 @@
  		}
  		return kIOReturnSuccess;
  
@@ -1631,7 +1662,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	case kFBMethodGetBlock:                         /* in: which block; out: its bytes */
  		if (args->structureOutput == NULL) {
  			return kIOReturnBadArgument;
-@@ -1907,11 +2067,40 @@
+@@ -1907,11 +2084,40 @@
  	gAcceleratorTakesProperties = PE_parse_boot_argn("metal", &metal, sizeof(metal)) && metal != 0;
  	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
  		accelerator->setName("sgx");
