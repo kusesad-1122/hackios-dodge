@@ -1443,7 +1443,15 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  };
  
  /* The swap request (IOMobileFramebufferSwapEnd): 0x46c bytes, of which we read these. */
-@@ -337,6 +358,12 @@
+@@ -298,6 +319,7 @@
+ 	uint32_t        fStatStale, fStatStaleShown; /* swaps of a surface not drawn again since shown; still not after SWAP_NEW_MS */
+ 	/* how the display is doing: frames and time spent drawing them here since fStatSince */
+ 	uint32_t        fStatFrames;
++	uint32_t        fStatShowCalls, fStatDrawLayerCalls, fStatGateRejects;
+ 	uint64_t        fStatSince, fStatDrawing;
+ 	/* ... and how evenly: the time from each frame to the next, counted by the millisecond (the last count: longer) */
+ 	uint64_t        fLastFrame;
+@@ -337,6 +359,12 @@
  	uint32_t *      fHelperBlend[7];
  	void record(MiniIOSurface * s);
  	/*
@@ -1456,7 +1464,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	 * dada (dadascan=1): a frame that is one surface of the whole display is copied as it is, row for row, into a
  	 * buffer of the display controller's, which then shows it -- no scaling here, and the panel's memory untouched.
  	 */
-@@ -878,6 +905,11 @@
+@@ -878,6 +906,11 @@
  		dh = (int32_t) fHeight;
  	}
  	if (sx < 0 || sy < 0 || (uint32_t) (sx + sw) > s->info.width || (uint32_t) (sy + sh) > s->info.height) {
@@ -1468,7 +1476,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		return;
  	}
  	/* the rectangle on the panel */
-@@ -886,6 +918,12 @@
+@@ -886,6 +919,12 @@
  	px1 = (int32_t) ((int64_t) (dx + dw) * fPanelWidth / fWidth);
  	py1 = (int32_t) ((int64_t) (dy + dh) * fPanelHeight / fHeight);
  	if (px1 <= px0 || py1 <= py0) {
@@ -1481,7 +1489,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		return;
  	}
  	/* (blending, a row of the picture mixed from two: room for it, for every one who draws rows) */
-@@ -941,6 +979,7 @@
+@@ -941,6 +980,7 @@
  	job.unscaled = px1 - px0 == sw && py1 - py0 == sh && px0 >= 0 && (uint32_t) px1 <= fPanelWidth;
  	if (fThreads <= 1 || fDiff || fHelpersStarted + 1 < fThreads) {
  		drawRows(&job, py0, py1, fBlendRow);
@@ -1489,7 +1497,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		return;
  	}
  	/* shared out: the helpers take their rows, this thread the first share, then waits for them */
-@@ -956,6 +995,52 @@
+@@ -956,6 +996,52 @@
  		IOLockSleep(fHelperLock, &fHelpersBusy, THREAD_UNINT);
  	}
  	IOLockUnlock(fHelperLock);
@@ -1542,7 +1550,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  }
  
  /*
-@@ -1102,6 +1187,34 @@
+@@ -1102,6 +1188,34 @@
  		IOLog("MiniIOMobileFramebuffer: %u frames shown from the display's buffers, %llu us a copy (surface %u, %u bytes a "
  		    "row)\n", fScanShown, nanos / fScanShown / NSEC_PER_USEC, s->sid, s->info.bytesPerRow);
  	}
@@ -1577,10 +1585,11 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	return true;
  }
  
-@@ -1115,6 +1228,15 @@
+@@ -1115,6 +1229,16 @@
  	MiniIOSurface * recorded = NULL;
  	bool report;
  
++	fStatShowCalls++;
 +	{
 +		static unsigned entered;
 +		if (entered++ < 4) {
@@ -1593,26 +1602,32 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	/*
  	 * dada: a swap can come before the GPU work that draws its surface has reached the kernel (the render server swaps once its
  	 * command buffer is scheduled, and the runtime or Turnip may hand it over later): the surface's last submission is then the one
-@@ -1264,6 +1386,14 @@
- 		memcpy(src, swap + SWAP_SOURCE(layer), sizeof(src));
+@@ -1265,11 +1389,12 @@
  		memcpy(dst, swap + SWAP_DEST(layer), sizeof(dst));
  		s = surfaces[layer];
-+		{
-+			static unsigned said;
-+			if (said++ < 8) {
-+				IOLog("MiniIOMobileFramebuffer: layer %u sid %u surface %s bytesPerElement %u planes %u\n",
-+				    layer, sid, s ? "present" : "NULL",
-+				    s ? s->info.bytesPerElement : 0, s ? s->info.planeCount : 0);
-+			}
-+		}
  		if (report) {
- 			IOLog("MiniIOMobileFramebuffer: swap %u layer %u: surface %u%s (%ux%u '%c%c%c%c') "
- 			    "from %d,%d %dx%d to %d,%d %dx%d, layers set 0x%x\n", swapWord(swap, SWAP_ID), layer, sid,
-@@ -1285,6 +1415,14 @@
+-			IOLog("MiniIOMobileFramebuffer: swap %u layer %u: surface %u%s (%ux%u '%c%c%c%c') "
+-			    "from %d,%d %dx%d to %d,%d %dx%d, layers set 0x%x\n", swapWord(swap, SWAP_ID), layer, sid,
++			IOLog("MiniIOMobileFramebuffer: swap %u layer %u: surface %u%s (%ux%u '%c%c%c%c', %u bytes a pixel, "
++			    "%u planes) from %d,%d %dx%d to %d,%d %dx%d, layers set 0x%x\n", swapWord(swap, SWAP_ID), layer, sid,
+ 			    s ? "" : " MISSING", s ? s->info.width : 0, s ? s->info.height : 0,
+ 			    s ? (int) (s->info.pixelFormat >> 24 & 0xff) : '?', s ? (int) (s->info.pixelFormat >> 16 & 0xff) : '?',
+ 			    s ? (int) (s->info.pixelFormat >> 8 & 0xff) : '?', s ? (int) (s->info.pixelFormat & 0xff) : '?',
++			    s ? s->info.bytesPerElement : 0, s ? s->info.planeCount : 0,
+ 			    src[0], src[1], src[2], src[3], dst[0], dst[1], dst[2], dst[3], set);
+ 		}
+ 		if (s == NULL) {
+@@ -1281,10 +1406,20 @@
+ 				fGraphics = true;
+ 				PE_initialize_console(NULL, kPEGraphicsMode);
+ 			}
++			fStatDrawLayerCalls++;
+ 			drawLayer(s, src, dst);
  			if (layer == 0) {
  				recorded = s;   /* (recorded once the frame is in the panel's memory: see below) */
  			}
 +		} else {
++			fStatGateRejects++;
 +			static unsigned said;
 +			if (said++ < 4) {
 +				IOLog("MiniIOMobileFramebuffer: layer %u surface %u not drawn: %u bytes a pixel, %u planes, %ux%u '%c%c%c%c'\n",
@@ -1623,7 +1638,29 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		}
  	}
  	drawn = mach_absolute_time();
-@@ -1696,6 +1834,53 @@
+@@ -1319,10 +1454,11 @@
+ 		absolutetime_to_nanoseconds(fStatBeatWait, &beat);
+ 		IOLog("MiniIOMobileFramebuffer: %u frames in %llu ms (%llu a second), %llu us each in the driver, after %llu us "
+ 		    "waiting for the GPU and, %u of them, %llu us for the next refresh; %u swaps waited for the frame before, "
+-		    "%u gave up; %u swaps came a refresh late themselves\n", fStatFrames, nanos / NSEC_PER_MSEC,
++		    "%u gave up; %u swaps came a refresh late themselves; show %u, drawLayer %u, gate rejected %u\n",
++		    fStatFrames, nanos / NSEC_PER_MSEC,
+ 		    fStatFrames * NSEC_PER_SEC / nanos, drawing / fStatFrames / NSEC_PER_USEC,
+ 		    waiting / fStatFrames / NSEC_PER_USEC, fStatOnBeat, fStatOnBeat ? beat / fStatOnBeat / NSEC_PER_USEC : 0,
+-		    fStatHeld, fStatLost, fStatSwapsLate);
++		    fStatHeld, fStatLost, fStatSwapsLate, fStatShowCalls, fStatDrawLayerCalls, fStatGateRejects);
+ 		IOLog("MiniIOMobileFramebuffer: %u swaps came before the GPU work of their surface, %u of them shown without it\n",
+ 		    fStatStale, fStatStaleShown);
+ 		if (surfaces[0] != NULL) {
+@@ -1379,6 +1515,7 @@
+ 			fDiffRight = fDiffBottom = 0;
+ 		}
+ 		fStatFrames = 0;
++		fStatShowCalls = fStatDrawLayerCalls = fStatGateRejects = 0;
+ 		fStatDrawing = 0;
+ 		fStatSince = 0;
+ 	}
+@@ -1696,6 +1833,53 @@
  		}
  		return kIOReturnSuccess;
  
@@ -1677,7 +1714,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	case kFBMethodGetBlock:                         /* in: which block; out: its bytes */
  		if (args->structureOutput == NULL) {
  			return kIOReturnBadArgument;
-@@ -1907,11 +2092,40 @@
+@@ -1907,11 +2091,40 @@
  	gAcceleratorTakesProperties = PE_parse_boot_argn("metal", &metal, sizeof(metal)) && metal != 0;
  	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
  		accelerator->setName("sgx");
