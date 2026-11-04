@@ -1415,7 +1415,89 @@ diff --git a/osfmk/vm/vm_shared_region_pager.c b/osfmk/vm/vm_shared_region_pager
 diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 --- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 +++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-@@ -1907,11 +1907,40 @@
+@@ -77,6 +77,27 @@
+ 	kFBMethodGetBlock               = 79,
+ 	kFBMethodSwapCancelAll          = 81,
+ 	kFBMethodGetProtectionOptions   = 82,
++	/*
++	 * iOS 26's backboardd asks for the display mode through selectors the 16.5 ABI above does not
++	 * name.  They were observed on the device and their shapes are unambiguous:
++	 *   57  0 in, 1 out   -- the mode in effect
++	 *   18  0 in, 1 out   -- the preferred (native) mode
++	 *   15  2 in, 1 out   -- select a mode, answer the one in effect
++	 *   29  0 in, 8 out   -- the display area, as a structure
++	 *   22  1 in, 0 out   -- a display attribute to set
++	 *   50  2 in, 0 out   -- panel timing/scaling knobs
++	 *   88  1 in, 0 out   -- power related
++	 * Answering them with zeros made the window server report "current mode (16383 x 16383),
++	 * preferred mode (0 x 0)", which is why nothing was ever drawn: a display with no valid mode
++	 * is not composited into.
++	 */
++	kFBMethodSelectDisplayMode      = 15,
++	kFBMethodGetPreferredMode       = 18,
++	kFBMethodSetDisplayAttribute    = 22,
++	kFBMethodGetDisplayAreaStruct   = 29,
++	kFBMethodSetPanelTiming         = 50,
++	kFBMethodGetCurrentMode         = 57,
++	kFBMethodSetPowerAttribute      = 88,
+ };
+ 
+ /* The swap request (IOMobileFramebufferSwapEnd): 0x46c bytes, of which we read these. */
+@@ -1696,6 +1717,53 @@
+ 		}
+ 		return kIOReturnSuccess;
+ 
++	case kFBMethodGetCurrentMode:                   /* out: the mode in effect */
++	case kFBMethodGetPreferredMode:                 /* out: the native mode */
++		if (args->scalarOutputCount < 1) {
++			return kIOReturnBadArgument;
++		}
++		/*
++		 * One mode, numbered 0: the panel's own size.  The window server compares the answer
++		 * against what it reads from the mode descriptor (selector 27) and refuses to composite
++		 * a display whose current and preferred modes disagree with it.
++		 */
++		out[0] = 0;
++		args->scalarOutputCount = 1;
++		IOLog("MiniIOMobileFramebuffer: selector %u: mode 0 (%ux%u)\n", selector,
++		    fOwner->fWidth, fOwner->fHeight);
++		return kIOReturnSuccess;
++
++	case kFBMethodSelectDisplayMode:                /* in: mode, flags; out: the mode now in effect */
++		if (args->scalarOutputCount >= 1) {
++			out[0] = 0;
++			args->scalarOutputCount = 1;
++		}
++		IOLog("MiniIOMobileFramebuffer: select mode %llu flags %#llx: the panel has one mode\n",
++		    args->scalarInputCount > 0 ? in[0] : 0ULL, args->scalarInputCount > 1 ? in[1] : 0ULL);
++		return kIOReturnSuccess;
++
++	case kFBMethodGetDisplayAreaStruct:
++		if (args->structureOutput == NULL || args->structureOutputSize < 8) {
++			return kIOReturnBadArgument;
++		}
++		{
++			/* x, y, width, height as four 16-bit fields, the way the display area is packed */
++			uint16_t * area = (uint16_t *) args->structureOutput;
++			bzero(args->structureOutput, args->structureOutputSize);
++			area[0] = 0;
++			area[1] = 0;
++			area[2] = (uint16_t) fOwner->fWidth;
++			area[3] = (uint16_t) fOwner->fHeight;
++		}
++		return kIOReturnSuccess;
++
++	case kFBMethodSetDisplayAttribute:              /* in: attribute; nothing to answer */
++	case kFBMethodSetPanelTiming:                   /* in: knob, value */
++	case kFBMethodSetPowerAttribute:                /* in: what to change */
++		IOLog("MiniIOMobileFramebuffer: selector %u (in %llu %llu) accepted\n", selector,
++		    args->scalarInputCount > 0 ? in[0] : 0ULL, args->scalarInputCount > 1 ? in[1] : 0ULL);
++		return kIOReturnSuccess;
++
+ 	case kFBMethodGetBlock:                         /* in: which block; out: its bytes */
+ 		if (args->structureOutput == NULL) {
+ 			return kIOReturnBadArgument;
+@@ -1907,11 +1975,40 @@
  	gAcceleratorTakesProperties = PE_parse_boot_argn("metal", &metal, sizeof(metal)) && metal != 0;
  	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
  		accelerator->setName("sgx");
