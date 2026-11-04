@@ -1456,7 +1456,32 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	 * dada (dadascan=1): a frame that is one surface of the whole display is copied as it is, row for row, into a
  	 * buffer of the display controller's, which then shows it -- no scaling here, and the panel's memory untouched.
  	 */
-@@ -941,6 +968,7 @@
+@@ -878,6 +905,11 @@
+ 		dh = (int32_t) fHeight;
+ 	}
+ 	if (sx < 0 || sy < 0 || (uint32_t) (sx + sw) > s->info.width || (uint32_t) (sy + sh) > s->info.height) {
++		static unsigned said;
++		if (said++ < 4) {
++			IOLog("MiniIOMobileFramebuffer: drawLayer dropped: source %d,%d %dx%d outside the surface %ux%u\n",
++			    sx, sy, sw, sh, s->info.width, s->info.height);
++		}
+ 		return;
+ 	}
+ 	/* the rectangle on the panel */
+@@ -886,6 +918,12 @@
+ 	px1 = (int32_t) ((int64_t) (dx + dw) * fPanelWidth / fWidth);
+ 	py1 = (int32_t) ((int64_t) (dy + dh) * fPanelHeight / fHeight);
+ 	if (px1 <= px0 || py1 <= py0) {
++		static unsigned said;
++		if (said++ < 4) {
++			IOLog("MiniIOMobileFramebuffer: drawLayer dropped: panel rectangle %d..%d x %d..%d is empty "
++			    "(display %ux%u, panel %ux%u, dest %d,%d %dx%d)\n", px0, px1, py0, py1,
++			    fWidth, fHeight, fPanelWidth, fPanelHeight, dx, dy, dw, dh);
++		}
+ 		return;
+ 	}
+ 	/* (blending, a row of the picture mixed from two: room for it, for every one who draws rows) */
+@@ -941,6 +979,7 @@
  	job.unscaled = px1 - px0 == sw && py1 - py0 == sh && px0 >= 0 && (uint32_t) px1 <= fPanelWidth;
  	if (fThreads <= 1 || fDiff || fHelpersStarted + 1 < fThreads) {
  		drawRows(&job, py0, py1, fBlendRow);
@@ -1464,7 +1489,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		return;
  	}
  	/* shared out: the helpers take their rows, this thread the first share, then waits for them */
-@@ -956,6 +984,52 @@
+@@ -956,6 +995,52 @@
  		IOLockSleep(fHelperLock, &fHelpersBusy, THREAD_UNINT);
  	}
  	IOLockUnlock(fHelperLock);
@@ -1517,7 +1542,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  }
  
  /*
-@@ -1102,6 +1176,34 @@
+@@ -1102,6 +1187,34 @@
  		IOLog("MiniIOMobileFramebuffer: %u frames shown from the display's buffers, %llu us a copy (surface %u, %u bytes a "
  		    "row)\n", fScanShown, nanos / fScanShown / NSEC_PER_USEC, s->sid, s->info.bytesPerRow);
  	}
@@ -1552,7 +1577,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	return true;
  }
  
-@@ -1696,6 +1798,53 @@
+@@ -1696,6 +1809,53 @@
  		}
  		return kIOReturnSuccess;
  
@@ -1606,7 +1631,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	case kFBMethodGetBlock:                         /* in: which block; out: its bytes */
  		if (args->structureOutput == NULL) {
  			return kIOReturnBadArgument;
-@@ -1907,11 +2056,40 @@
+@@ -1907,11 +2067,40 @@
  	gAcceleratorTakesProperties = PE_parse_boot_argn("metal", &metal, sizeof(metal)) && metal != 0;
  	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
  		accelerator->setName("sgx");
