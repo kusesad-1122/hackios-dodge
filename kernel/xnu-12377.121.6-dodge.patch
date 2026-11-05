@@ -1652,7 +1652,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	fColumn = IONewZero(uint32_t, fPanelWidth);
  	fColumnWeight = IONewZero(uint16_t, fPanelWidth);
  	fDiff = gDiff != 0;
-@@ -714,6 +842,89 @@
+@@ -714,6 +842,106 @@
  	return rb | ga;
  }
  
@@ -1726,10 +1726,27 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
 +			    __builtin_shufflevector(w, w, 2, 2, 2, 2, 3, 3, 3, 3)));
 +			continue;
 +		}
-+		for (uint32_t k = i; k < i + 4; k++) {
-+			uint32_t a = from[column[k]], wk = weights[k];
++		/*
++		 * Upscaling repeats source columns; a four-pixel load from consecutive
++		 * columns no longer fits. Gather this quad's first and next pixels from
++		 * arbitrary columns, then blend all four in one vector operation.
++		 */
++		{
++			uint32_t a[4], b[4];
++			uint16_t w[4];
++			fb_u16x4 wv;
 +
-+			out[k] = wk == 0 || a == from[column[k] + 1] ? a : blend(a, from[column[k] + 1], wk);
++			for (uint32_t k = 0; k < 4; k++) {
++				uint32_t c = column[i + k], wk = weights[i + k];
++
++				a[k] = from[c];
++				b[k] = wk == 0 ? a[k] : from[c + 1];
++				w[k] = (uint16_t) wk;
++			}
++			__builtin_memcpy(&wv, w, sizeof(wv));
++			store4(out + i, blend4(load4(a), load4(b),
++			    __builtin_shufflevector(wv, wv, 0, 0, 0, 0, 1, 1, 1, 1),
++			    __builtin_shufflevector(wv, wv, 2, 2, 2, 2, 3, 3, 3, 3)));
 +		}
 +	}
 +	for (; i < n; i++) {
@@ -1742,7 +1759,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  /*
   * Where the middle of the `i`th of `out` pixels falls among `in` of them, in 256ths of a pixel,
   * kept within the first and the last.
-@@ -771,13 +982,7 @@
+@@ -771,13 +999,7 @@
  				const uint32_t * lower = (const uint32_t *) (pixels + (size_t) (sy + row + 1) * stride) + sx;
  				uint32_t first = fColumn[cx0], last = fColumn[cx1 - 1] + 1 < (uint32_t) sw ? fColumn[cx1 - 1] + 1 : fColumn[cx1 - 1];
  
@@ -1757,7 +1774,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  				from = blendRow;
  			}
  		} else {
-@@ -798,18 +1003,14 @@
+@@ -798,18 +1020,14 @@
  			}
  		}
  		if (filter) {
@@ -1780,7 +1797,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  			}
  		}
  	}
-@@ -878,6 +1079,11 @@
+@@ -878,6 +1096,11 @@
  		dh = (int32_t) fHeight;
  	}
  	if (sx < 0 || sy < 0 || (uint32_t) (sx + sw) > s->info.width || (uint32_t) (sy + sh) > s->info.height) {
@@ -1792,7 +1809,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		return;
  	}
  	/* the rectangle on the panel */
-@@ -886,6 +1092,12 @@
+@@ -886,6 +1109,12 @@
  	px1 = (int32_t) ((int64_t) (dx + dw) * fPanelWidth / fWidth);
  	py1 = (int32_t) ((int64_t) (dy + dh) * fPanelHeight / fHeight);
  	if (px1 <= px0 || py1 <= py0) {
@@ -1805,7 +1822,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		return;
  	}
  	/* (blending, a row of the picture mixed from two: room for it, for every one who draws rows) */
-@@ -941,6 +1153,7 @@
+@@ -941,6 +1170,7 @@
  	job.unscaled = px1 - px0 == sw && py1 - py0 == sh && px0 >= 0 && (uint32_t) px1 <= fPanelWidth;
  	if (fThreads <= 1 || fDiff || fHelpersStarted + 1 < fThreads) {
  		drawRows(&job, py0, py1, fBlendRow);
@@ -1813,7 +1830,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		return;
  	}
  	/* shared out: the helpers take their rows, this thread the first share, then waits for them */
-@@ -956,6 +1169,52 @@
+@@ -956,6 +1186,52 @@
  		IOLockSleep(fHelperLock, &fHelpersBusy, THREAD_UNINT);
  	}
  	IOLockUnlock(fHelperLock);
@@ -1866,7 +1883,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  }
  
  /*
-@@ -1102,6 +1361,34 @@
+@@ -1102,6 +1378,34 @@
  		IOLog("MiniIOMobileFramebuffer: %u frames shown from the display's buffers, %llu us a copy (surface %u, %u bytes a "
  		    "row)\n", fScanShown, nanos / fScanShown / NSEC_PER_USEC, s->sid, s->info.bytesPerRow);
  	}
@@ -1901,7 +1918,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	return true;
  }
  
-@@ -1115,6 +1402,16 @@
+@@ -1115,6 +1419,16 @@
  	MiniIOSurface * recorded = NULL;
  	bool report;
  
@@ -1918,7 +1935,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	/*
  	 * dada: a swap can come before the GPU work that draws its surface has reached the kernel (the render server swaps once its
  	 * command buffer is scheduled, and the runtime or Turnip may hand it over later): the surface's last submission is then the one
-@@ -1265,11 +1562,12 @@
+@@ -1265,11 +1579,12 @@
  		memcpy(dst, swap + SWAP_DEST(layer), sizeof(dst));
  		s = surfaces[layer];
  		if (report) {
@@ -1933,7 +1950,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  			    src[0], src[1], src[2], src[3], dst[0], dst[1], dst[2], dst[3], set);
  		}
  		if (s == NULL) {
-@@ -1281,10 +1579,20 @@
+@@ -1281,10 +1596,20 @@
  				fGraphics = true;
  				PE_initialize_console(NULL, kPEGraphicsMode);
  			}
@@ -1954,7 +1971,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		}
  	}
  	drawn = mach_absolute_time();
-@@ -1317,14 +1625,20 @@
+@@ -1317,14 +1642,20 @@
  		absolutetime_to_nanoseconds(fStatDrawing, &drawing);
  		absolutetime_to_nanoseconds(fStatWaiting, &waiting);
  		absolutetime_to_nanoseconds(fStatBeatWait, &beat);
@@ -1978,7 +1995,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		if (surfaces[0] != NULL) {
  			IOLog("MiniIOMobileFramebuffer: the last swap's surface %u: its last GPU submission %u (0: none ever named it)\n",
  			    surfaces[0]->sid, surfaces[0]->drawn);
-@@ -1379,6 +1693,7 @@
+@@ -1379,6 +1710,7 @@
  			fDiffRight = fDiffBottom = 0;
  		}
  		fStatFrames = 0;
@@ -1986,7 +2003,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		fStatDrawing = 0;
  		fStatSince = 0;
  	}
-@@ -1696,6 +2011,53 @@
+@@ -1696,6 +2028,53 @@
  		}
  		return kIOReturnSuccess;
  
@@ -2040,7 +2057,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	case kFBMethodGetBlock:                         /* in: which block; out: its bytes */
  		if (args->structureOutput == NULL) {
  			return kIOReturnBadArgument;
-@@ -1907,11 +2269,40 @@
+@@ -1907,11 +2286,40 @@
  	gAcceleratorTakesProperties = PE_parse_boot_argn("metal", &metal, sizeof(metal)) && metal != 0;
  	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
  		accelerator->setName("sgx");
