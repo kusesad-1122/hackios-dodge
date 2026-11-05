@@ -1443,7 +1443,40 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  };
  
  /* The swap request (IOMobileFramebufferSwapEnd): 0x46c bytes, of which we read these. */
-@@ -172,7 +193,36 @@
+@@ -131,6 +152,32 @@
+ #define kFBPointsHigh           812
+ #define kFBDefaultScale         3
+ static TUNABLE(uint32_t, gFBScale, "fbscale", 0);
++/*
++ * Boot-args fbpts=N and fbpts_high=M: the number of points the interface is laid out in, when the
++ * canvas is not 1125 wide (see the note at its use in start()). N alone is enough -- M defaults to
++ * the height that keeps the panel's own aspect, so `fbpts=375` on the 1440x3168 panel gives 375 x
++ * (375 * 3168 / 1440) = 375 x 825. Give both to match a particular phone: `fbpts=375
++ * fbpts_high=812` is the iPhone X layout this port's artwork was cut for.
++ */
++static TUNABLE(uint32_t, gFBPoints, "fbpts", 0);
++static TUNABLE(uint32_t, gFBPointsHigh, "fbpts_high", 0);
++/* what MobileGestalt answers "main screen scale" from, as 16.16 fixed point (3.84 = 0x3d70a) */
++static void
++publish_scale(uint32_t fixed)
++{
++	static const char * const places[][2] = { { "/chosen", "display-scale" }, { "/product", "artwork-scale-factor" } };
++	uint32_t whole = fixed >> 16;
++
++	for (unsigned i = 0; i < sizeof(places) / sizeof(places[0]); i++) {
++		IORegistryEntry * node = IORegistryEntry::fromPath(places[i][0], gIODTPlane);
++
++		if (node != NULL) {
++			/* the whole part for the artwork: it is cut for a whole number of pixels a point */
++			node->setProperty(places[i][1], i == 0 ? &fixed : &whole, sizeof(uint32_t));
++			node->release();
++		}
++	}
++}
+ /* Boot-arg fbtrace=N: log the first N calls of every selector (default 3). */
+ static TUNABLE(uint32_t, gFBTrace, "fbtrace", 3);
+ 
+@@ -172,7 +219,36 @@
   */
  static TUNABLE(uint32_t, gFilter, "fb_filter", 1);
  static TUNABLE(uint32_t, gRefreshHz, "fb_hz", kFBRefreshHz);
@@ -1481,7 +1514,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  /*
   * Boot-arg fb_threads=N (1 to 8): so many processors scale a frame onto the panel together (see
   * drawRows()). Three by default: a frame is in the panel's memory 3 ms after its turn instead of 9
-@@ -298,6 +348,7 @@
+@@ -298,6 +374,7 @@
  	uint32_t        fStatStale, fStatStaleShown; /* swaps of a surface not drawn again since shown; still not after SWAP_NEW_MS */
  	/* how the display is doing: frames and time spent drawing them here since fStatSince */
  	uint32_t        fStatFrames;
@@ -1489,7 +1522,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	uint64_t        fStatSince, fStatDrawing;
  	/* ... and how evenly: the time from each frame to the next, counted by the millisecond (the last count: longer) */
  	uint64_t        fLastFrame;
-@@ -337,6 +388,12 @@
+@@ -337,6 +414,12 @@
  	uint32_t *      fHelperBlend[7];
  	void record(MiniIOSurface * s);
  	/*
@@ -1502,7 +1535,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	 * dada (dadascan=1): a frame that is one surface of the whole display is copied as it is, row for row, into a
  	 * buffer of the display controller's, which then shows it -- no scaling here, and the panel's memory untouched.
  	 */
-@@ -454,8 +511,14 @@
+@@ -454,8 +537,14 @@
  	setNumber(timing, "AspectRatio", 13);
  	setNumber(timing, "PreciseAspectRatio", (uint64_t) fWidth * 65536 / fHeight);
  	setNumber(timing, "ValidPixelEncodings", 1);
@@ -1519,7 +1552,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	timing->setObject("IsPreferred", kOSBooleanTrue);
  	timing->setObject("IsVirtual", kOSBooleanFalse);
  	timing->setObject("IsOverscanned", kOSBooleanFalse);
-@@ -483,13 +546,28 @@
+@@ -483,13 +572,28 @@
  	attributes->setObject("ProductAttributes", product);
  	setProperty("DisplayAttributes", attributes);
  	nanoseconds_to_absolutetime(NSEC_PER_SEC / hz, &frameTicks);
@@ -1554,7 +1587,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	OSSafeReleaseNULL(timings);
  	OSSafeReleaseNULL(colors);
  	OSSafeReleaseNULL(none);
-@@ -506,7 +584,6 @@
+@@ -506,7 +610,6 @@
  IOMobileFramebuffer::start(IOService * provider)
  {
  	thread_t thread;
@@ -1562,7 +1595,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	if (!IOService::start(provider)) {
  		return false;
  	}
-@@ -517,7 +594,7 @@
+@@ -517,7 +620,7 @@
  	}
  	fLock = IOLockAlloc();
  	fSwapLock = IOLockAlloc();
@@ -1571,7 +1604,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		IOLog("MiniIOMobileFramebuffer: no thread to put frames on the panel with\n");
  		return false;
  	}
-@@ -541,7 +618,7 @@
+@@ -541,7 +644,7 @@
  	}
  	fHelperLock = IOLockAlloc();
  	for (unsigned i = 0; i + 1 < fThreads; i++) {
@@ -1580,7 +1613,46 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  			fThreads = i + 1;
  			break;
  		}
-@@ -878,6 +955,11 @@
+@@ -554,6 +657,23 @@
+ 	fRowBytes = vinfo.v_rowbytes;
+ 	fWidth = gFBWidth ? gFBWidth : fPanelWidth;
+ 	fHeight = gFBHeight ? gFBHeight : fPanelHeight;
++	/*
++	 * Boot-arg fbpts=WxH (e.g. fbpts=375x812): how many points the user interface lays out in,
++	 * instead of the 375 x 812 the display used to be described as.
++	 *
++	 * This is what keeps the picture the right size on a canvas that is not 1125 wide. iOS lays out
++	 * by points and puts scale pixels in each one, taking both from MobileGestalt: the canvas is
++	 * fbwidth wide, so with the scale still 3 an interface meant to be 375 points across comes out
++	 * as 1440/3 = 480 points -- every icon, label and margin 22% smaller than on the phone the
++	 * screen size claims to be (measured: 1125/1440 = 78%). Telling MobileGestalt a scale of
++	 * 1440/375 = 3.84 puts the layout back to 375 points and each point back to the size it has on
++	 * an iPhone X, while the canvas stays the panel's own size so drawRows() keeps its 1:1 memcpy
++	 * path (1194 us a frame against 24500).
++	 *
++	 * The scale is published as 16.16 fixed point in display-scale (MobileGestalt's "main screen
++	 * scale"), because 3.84 is not a whole number of pixels per point. artwork-scale-factor keeps
++	 * the whole part: it is what the artwork in the system volume was cut for.
++	 */
+ 	if (gFBScale != 0 && gFBScale != kFBDefaultScale) {
+ 		static const char * const places[][2] = { { "/chosen", "display-scale" }, { "/product", "artwork-scale-factor" } };
+ 		uint32_t scale = gFBScale;
+@@ -570,6 +690,14 @@
+ 			}
+ 		}
+ 	}
++	if (gFBPoints != 0 && fWidth != 0) {
++		uint32_t fixed = (uint32_t) (((uint64_t) fWidth << 16) / gFBPoints);
++		uint32_t high = gFBPointsHigh != 0 ? gFBPointsHigh : (uint32_t) ((uint64_t) gFBPoints * fHeight / fWidth);
++
++		publish_scale(fixed);
++		IOLog("MiniIOMobileFramebuffer: the interface is laid out in %ux%u points at %u.%02u pixels each "
++		    "(canvas %ux%u)\n", gFBPoints, high, fixed >> 16, ((fixed & 0xffff) * 100) >> 16, fWidth, fHeight);
++	}
+ 	fColumn = IONewZero(uint32_t, fPanelWidth);
+ 	fColumnWeight = IONewZero(uint16_t, fPanelWidth);
+ 	fDiff = gDiff != 0;
+@@ -878,6 +1006,11 @@
  		dh = (int32_t) fHeight;
  	}
  	if (sx < 0 || sy < 0 || (uint32_t) (sx + sw) > s->info.width || (uint32_t) (sy + sh) > s->info.height) {
@@ -1592,7 +1664,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		return;
  	}
  	/* the rectangle on the panel */
-@@ -886,6 +968,12 @@
+@@ -886,6 +1019,12 @@
  	px1 = (int32_t) ((int64_t) (dx + dw) * fPanelWidth / fWidth);
  	py1 = (int32_t) ((int64_t) (dy + dh) * fPanelHeight / fHeight);
  	if (px1 <= px0 || py1 <= py0) {
@@ -1605,7 +1677,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		return;
  	}
  	/* (blending, a row of the picture mixed from two: room for it, for every one who draws rows) */
-@@ -941,6 +1029,7 @@
+@@ -941,6 +1080,7 @@
  	job.unscaled = px1 - px0 == sw && py1 - py0 == sh && px0 >= 0 && (uint32_t) px1 <= fPanelWidth;
  	if (fThreads <= 1 || fDiff || fHelpersStarted + 1 < fThreads) {
  		drawRows(&job, py0, py1, fBlendRow);
@@ -1613,7 +1685,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		return;
  	}
  	/* shared out: the helpers take their rows, this thread the first share, then waits for them */
-@@ -956,6 +1045,52 @@
+@@ -956,6 +1096,52 @@
  		IOLockSleep(fHelperLock, &fHelpersBusy, THREAD_UNINT);
  	}
  	IOLockUnlock(fHelperLock);
@@ -1666,7 +1738,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  }
  
  /*
-@@ -1102,6 +1237,34 @@
+@@ -1102,6 +1288,34 @@
  		IOLog("MiniIOMobileFramebuffer: %u frames shown from the display's buffers, %llu us a copy (surface %u, %u bytes a "
  		    "row)\n", fScanShown, nanos / fScanShown / NSEC_PER_USEC, s->sid, s->info.bytesPerRow);
  	}
@@ -1701,7 +1773,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	return true;
  }
  
-@@ -1115,6 +1278,16 @@
+@@ -1115,6 +1329,16 @@
  	MiniIOSurface * recorded = NULL;
  	bool report;
  
@@ -1718,7 +1790,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	/*
  	 * dada: a swap can come before the GPU work that draws its surface has reached the kernel (the render server swaps once its
  	 * command buffer is scheduled, and the runtime or Turnip may hand it over later): the surface's last submission is then the one
-@@ -1265,11 +1438,12 @@
+@@ -1265,11 +1489,12 @@
  		memcpy(dst, swap + SWAP_DEST(layer), sizeof(dst));
  		s = surfaces[layer];
  		if (report) {
@@ -1733,7 +1805,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  			    src[0], src[1], src[2], src[3], dst[0], dst[1], dst[2], dst[3], set);
  		}
  		if (s == NULL) {
-@@ -1281,10 +1455,20 @@
+@@ -1281,10 +1506,20 @@
  				fGraphics = true;
  				PE_initialize_console(NULL, kPEGraphicsMode);
  			}
@@ -1754,7 +1826,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		}
  	}
  	drawn = mach_absolute_time();
-@@ -1317,14 +1501,20 @@
+@@ -1317,14 +1552,20 @@
  		absolutetime_to_nanoseconds(fStatDrawing, &drawing);
  		absolutetime_to_nanoseconds(fStatWaiting, &waiting);
  		absolutetime_to_nanoseconds(fStatBeatWait, &beat);
@@ -1778,7 +1850,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		if (surfaces[0] != NULL) {
  			IOLog("MiniIOMobileFramebuffer: the last swap's surface %u: its last GPU submission %u (0: none ever named it)\n",
  			    surfaces[0]->sid, surfaces[0]->drawn);
-@@ -1379,6 +1569,7 @@
+@@ -1379,6 +1620,7 @@
  			fDiffRight = fDiffBottom = 0;
  		}
  		fStatFrames = 0;
@@ -1786,7 +1858,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		fStatDrawing = 0;
  		fStatSince = 0;
  	}
-@@ -1696,6 +1887,53 @@
+@@ -1696,6 +1938,53 @@
  		}
  		return kIOReturnSuccess;
  
@@ -1840,7 +1912,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	case kFBMethodGetBlock:                         /* in: which block; out: its bytes */
  		if (args->structureOutput == NULL) {
  			return kIOReturnBadArgument;
-@@ -1907,11 +2145,40 @@
+@@ -1907,11 +2196,40 @@
  	gAcceleratorTakesProperties = PE_parse_boot_argn("metal", &metal, sizeof(metal)) && metal != 0;
  	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
  		accelerator->setName("sgx");
