@@ -1963,7 +1963,18 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	/*
  	 * dada: a swap can come before the GPU work that draws its surface has reached the kernel (the render server swaps once its
  	 * command buffer is scheduled, and the runtime or Turnip may hand it over later): the surface's last submission is then the one
-@@ -1265,11 +1597,12 @@
+@@ -1228,6 +1560,10 @@
+ 		int32_t src[4], dst[4];
+ 		MiniIOSurface * s;
+ 
++		if (sid == 0 || layer != 0 || swapWord(swap, SWAP_SURFACE(1)) != 0 ||
++		    swapWord(swap, SWAP_SURFACE(2)) != 0 || swapWord(swap, SWAP_SURFACE(3)) != 0) {
++			fReuseValid = false;
++		}
+ 		layers |= sid != 0 ? 1u << layer : 0;
+ 		if (scanned) {
+ 			if (layer == 0) {
+@@ -1265,11 +1601,12 @@
  		memcpy(dst, swap + SWAP_DEST(layer), sizeof(dst));
  		s = surfaces[layer];
  		if (report) {
@@ -1978,7 +1989,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  			    src[0], src[1], src[2], src[3], dst[0], dst[1], dst[2], dst[3], set);
  		}
  		if (s == NULL) {
-@@ -1281,10 +1614,20 @@
+@@ -1281,10 +1618,20 @@
  				fGraphics = true;
  				PE_initialize_console(NULL, kPEGraphicsMode);
  			}
@@ -1999,7 +2010,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		}
  	}
  	drawn = mach_absolute_time();
-@@ -1317,19 +1660,25 @@
+@@ -1317,19 +1664,25 @@
  		absolutetime_to_nanoseconds(fStatDrawing, &drawing);
  		absolutetime_to_nanoseconds(fStatWaiting, &waiting);
  		absolutetime_to_nanoseconds(fStatBeatWait, &beat);
@@ -2029,7 +2040,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		/*
  		 * The last swap as it came, every five seconds rather than for the first eight: the
  		 * first ones are lost from a long run's log, and with CoreAnimation's GPU renderer the
-@@ -1379,6 +1728,7 @@
+@@ -1379,6 +1732,7 @@
  			fDiffRight = fDiffBottom = 0;
  		}
  		fStatFrames = 0;
@@ -2037,7 +2048,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		fStatDrawing = 0;
  		fStatSince = 0;
  	}
-@@ -1696,6 +2046,53 @@
+@@ -1696,6 +2050,53 @@
  		}
  		return kIOReturnSuccess;
  
@@ -2091,7 +2102,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	case kFBMethodGetBlock:                         /* in: which block; out: its bytes */
  		if (args->structureOutput == NULL) {
  			return kIOReturnBadArgument;
-@@ -1907,11 +2304,40 @@
+@@ -1907,11 +2308,40 @@
  	gAcceleratorTakesProperties = PE_parse_boot_argn("metal", &metal, sizeof(metal)) && metal != 0;
  	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
  		accelerator->setName("sgx");
