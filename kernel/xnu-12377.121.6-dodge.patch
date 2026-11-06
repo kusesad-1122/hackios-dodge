@@ -2109,3 +2109,45 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		}
  	}
  	OSSafeReleaseNULL(accelerator);
+diff --git a/iokit/Kernel/MiniIOSurface.cpp b/iokit/Kernel/MiniIOSurface.cpp
+--- a/iokit/Kernel/MiniIOSurface.cpp
++++ b/iokit/Kernel/MiniIOSurface.cpp
+@@ -69,6 +69,7 @@
+ 	kSurfaceMethodEventRemoveListener = 41, /* in the listener */
+ 	kSurfaceMethodDetachModeCode    = 43,
+ 	kSurfaceMethodSetOwnershipIdentity = 44,
++	kSurfaceMethodQueryTransactionList = 58, /* iOS 26: three scalar outputs describe an empty transaction list */
+ };
+ 
+ /* IOConnectTrap indices */
+@@ -105,6 +106,8 @@
+ static uint64_t         gSurfaceLogged[2];                      /* selectors already complained about */
+ /* Boot-arg surftrace=N: log the first N surfaces created (default 24). */
+ static TUNABLE(uint32_t, gSurfaceTrace, "surftrace", 24);
++/* surf_query58=1: answer iOS 26's query with an empty transaction list; 0 keeps the old refusal for A/B. */
++static TUNABLE(uint32_t, gSurfaceQuery58, "surf_query58", 0);
+ static uint32_t         gSurfaceTraced;                         /* (a tunable is read-only after boot) */
+ /*
+  * Boot-arg surftrace_of=NAME: only the surfaces made by programs whose name begins with NAME count for
+@@ -1952,6 +1955,21 @@
+ 		if (args->scalarOutputCount != 0) {
+ 			bzero(args->scalarOutput, args->scalarOutputCount * sizeof(args->scalarOutput[0]));
+ 		}
++		return kIOReturnSuccess;
++
++	case kSurfaceMethodQueryTransactionList:
++		/*
++		 * iOS 26's IOSurfaceClientQueryTransactionList has five scalar inputs and three scalar
++		 * outputs. No surface here has transactions, so the three outputs are an empty list.
++		 * Refusing it makes backboardd log "got non-success return from kernel" and can stall a
++		 * frame behind Metal's follow-up work; surf_query58=0 preserves the old behavior.
++		 */
++		if (gSurfaceQuery58 == 0) {
++			break;
++		}
++		if (args->scalarOutputCount != 0) {
++			bzero(args->scalarOutput, args->scalarOutputCount * sizeof(args->scalarOutput[0]));
++		}
+ 		return kIOReturnSuccess;
+ 
+ 	default:
